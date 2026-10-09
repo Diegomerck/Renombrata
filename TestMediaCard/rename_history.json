@@ -1,0 +1,38 @@
+[
+  {
+    "timestamp": "2026-10-08T18:46:02.605525",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C001_261007OC.MP4",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_102Y103_1_T1_A007_1_D3_U3.MP4",
+    "takeInfo": "Esc. 102Y103 - T1"
+  },
+  {
+    "timestamp": "2026-10-08T18:46:02.607511",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C001_261007OCM01.XML",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_102Y103_1_T1_A007_1_D3_U3.XML",
+    "takeInfo": "Esc. 102Y103 - T1"
+  },
+  {
+    "timestamp": "2026-10-08T18:46:02.608512",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C002_261007OC.MP4",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_96_TF_A007_1_D3_U3.MP4",
+    "takeInfo": "Esc. 96 - TTF"
+  },
+  {
+    "timestamp": "2026-10-08T18:46:02.611500",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C002_261007OCM01.XML",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_96_TF_A007_1_D3_U3.XML",
+    "takeInfo": "Esc. 96 - TTF"
+  },
+  {
+    "timestamp": "2026-10-08T18:46:02.618991",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C003_261007OC.MP4",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_102Y103_1_T2_A007_1_D3_U3.MP4",
+    "takeInfo": "Esc. 102Y103 - T2"
+  },
+  {
+    "timestamp": "2026-10-08T18:46:02.622214",
+    "originalPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\A007C003_261007OCM01.XML",
+    "renamedPath": "C:\\Users\\Diegomerck\\Desktop\\TestMediaCard\\MNLDVDL_071026_102Y103_1_T2_A007_1_D3_U3.XML",
+    "takeInfo": "Esc. 102Y103 - T2"
+  }
+]
