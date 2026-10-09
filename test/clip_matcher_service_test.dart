@@ -19,7 +19,7 @@ void main() {
       ShootingLog log = ShootingLog(
         metadata: ShootingLogMetadata(
           nomenclature: 'MNL', date: '071026', unit: 'U3', day: 'D3',
-          producer: 'P', production: 'PR', location: 'L', format: 'F', responsibleEngineer: 'E', ingestor: 'I',
+          producer: 'P', production: 'PR', location: 'L', audioFormat: 'F', frameRate: '24fps', videoCodec: 'ProRes', responsibleEngineer: 'E', ingestor: 'I',
         ),
         records: [
           ShotRecord(chapter: '1', scene: '10', plane: '1', take: '1', reel: 'A007', cameras: [
@@ -69,7 +69,7 @@ void main() {
       ShootingLog log = ShootingLog(
         metadata: ShootingLogMetadata(
           nomenclature: 'MNL', date: '071026', unit: 'U3', day: 'D3',
-          producer: 'P', production: 'PR', location: 'L', format: 'F', responsibleEngineer: 'E', ingestor: 'I',
+          producer: 'P', production: 'PR', location: 'L', audioFormat: 'F', frameRate: '24fps', videoCodec: 'ProRes', responsibleEngineer: 'E', ingestor: 'I',
         ),
         records: [
           ShotRecord(chapter: '1', scene: '10', plane: '1', take: '1', reel: 'A007', cameras: [
@@ -103,7 +103,7 @@ void main() {
       ShootingLog log = ShootingLog(
         metadata: ShootingLogMetadata(
           nomenclature: 'MNL', date: '071026', unit: 'U3', day: 'D3',
-          producer: 'P', production: 'PR', location: 'L', format: 'F', responsibleEngineer: 'E', ingestor: 'I',
+          producer: 'P', production: 'PR', location: 'L', audioFormat: 'F', frameRate: '24fps', videoCodec: 'ProRes', responsibleEngineer: 'E', ingestor: 'I',
         ),
         records: [
           ShotRecord(chapter: '1', scene: '10', plane: '1', take: '1', reel: 'A007', cameras: [
@@ -150,7 +150,7 @@ void main() {
       ShootingLog log = ShootingLog(
         metadata: ShootingLogMetadata(
           nomenclature: 'MNL', date: '071026', unit: 'U3', day: 'D3',
-          producer: 'P', production: 'PR', location: 'L', format: 'F', responsibleEngineer: 'E', ingestor: 'I',
+          producer: 'P', production: 'PR', location: 'L', audioFormat: 'F', frameRate: '24fps', videoCodec: 'ProRes', responsibleEngineer: 'E', ingestor: 'I',
         ),
         records: [
           ShotRecord(chapter: '1', scene: '10', plane: '3', take: '3', reel: 'B007', cameras: [

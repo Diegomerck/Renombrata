@@ -29,7 +29,9 @@ class BitacoraParserService {
       date: getCellString(1, 4), // B5
       unit: getCellString(4, 0), // E1
       day: getCellString(4, 1), // E2
-      format: getCellString(4, 2), // E3
+      audioFormat: getCellString(4, 2), // E3 (legacy format)
+      frameRate: '',
+      videoCodec: '',
       responsibleEngineer: getCellString(4, 3), // E4
       ingestor: getCellString(4, 4), // E5
     );

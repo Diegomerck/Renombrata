@@ -13,7 +13,7 @@ void main() {
       ShootingLog log = ShootingLog(
         metadata: ShootingLogMetadata(
           nomenclature: 'MNL', date: '071026', unit: 'U3', day: 'D3',
-          producer: 'P', production: 'PR', location: 'L', format: 'F', responsibleEngineer: 'E', ingestor: 'I',
+          producer: 'P', production: 'PR', location: 'L', audioFormat: 'F', frameRate: '24fps', videoCodec: 'ProRes', responsibleEngineer: 'E', ingestor: 'I',
         ),
         records: [
           ShotRecord(

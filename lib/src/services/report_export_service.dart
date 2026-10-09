@@ -38,7 +38,8 @@ class ReportExportService {
     sheet.setColumnWidth(8, 16.0);
     sheet.setColumnWidth(9, 18.0);
     sheet.setColumnWidth(10, 18.0);
-    sheet.setColumnWidth(11, 40.0);
+    sheet.setColumnWidth(11, 12.0);
+    sheet.setColumnWidth(12, 40.0);
 
     final now = DateTime.now();
     final formattedTimestamp = 
@@ -52,9 +53,10 @@ class ReportExportService {
     // Header Block
     sheet.appendRow([TextCellValue('PRODUCCIÓN:'), TextCellValue(metadata.production), TextCellValue('UNIDAD:'), TextCellValue(metadata.unit)]);
     sheet.appendRow([TextCellValue('PRODUCTOR:'), TextCellValue(metadata.producer), TextCellValue('DÍA:'), TextCellValue(metadata.day)]);
-    sheet.appendRow([TextCellValue('NOMENCLATURA:'), TextCellValue(metadata.nomenclature), TextCellValue('FORMATO:'), TextCellValue(metadata.format)]);
-    sheet.appendRow([TextCellValue('LOCACIÓN:'), TextCellValue(metadata.location), TextCellValue('ING. RESPONSABLE:'), TextCellValue(metadata.responsibleEngineer)]);
-    sheet.appendRow([TextCellValue('FECHA:'), TextCellValue(metadata.date), TextCellValue('INGESTADOR:'), TextCellValue(metadata.ingestor)]);
+    sheet.appendRow([TextCellValue('NOMENCLATURA:'), TextCellValue(metadata.nomenclature), TextCellValue('FRAME RATE:'), TextCellValue(metadata.frameRate)]);
+    sheet.appendRow([TextCellValue('LOCACIÓN:'), TextCellValue(metadata.location), TextCellValue('VIDEO CODEC:'), TextCellValue(metadata.videoCodec)]);
+    sheet.appendRow([TextCellValue('FECHA:'), TextCellValue(metadata.date), TextCellValue('AUDIO FORMAT:'), TextCellValue(metadata.audioFormat)]);
+    sheet.appendRow([TextCellValue('ING. RESPONSABLE:'), TextCellValue(metadata.responsibleEngineer), TextCellValue('INGESTADOR:'), TextCellValue(metadata.ingestor)]);
     sheet.appendRow([TextCellValue('FECHA EXPORTACIÓN:'), TextCellValue(formattedTimestamp)]);
     sheet.appendRow([]); // Empty row 7
 
@@ -71,6 +73,7 @@ class ReportExportService {
       'REEL',
       'TC IN',
       'TC OUT',
+      'MOS',
       'OBSERVACIONES'
     ];
     sheet.appendRow(headers.map((h) => TextCellValue(h)).toList());
@@ -86,7 +89,7 @@ class ReportExportService {
       String escena = proposal.associatedRecord?.scene ?? '—';
       String plano = proposal.associatedRecord?.plane ?? '—';
       String toma = proposal.associatedRecord?.take ?? '—';
-      String camara = 'CAM $activeCamera';
+      String camara = activeCamera.toUpperCase();
       String clipNum = '—';
       if (proposal.associatedRecord != null) {
         var camRec = proposal.associatedRecord!.cameras.firstWhere(
@@ -111,11 +114,12 @@ class ReportExportService {
       String reel = proposal.associatedRecord?.reel ?? '—';
       String tcIn = proposal.associatedRecord?.tcIn ?? '—';
       String tcOut = proposal.associatedRecord?.tcOut ?? '—';
+      String mos = proposal.associatedRecord?.isMos == true ? 'SI' : 'NO';
       String obs = proposal.associatedRecord?.observations ?? '—';
 
       List<String> rowData = [
         estado, originalFile, conventionName, escena, plano, toma,
-        camara, clipNum, reel, tcIn, tcOut, obs
+        camara, clipNum, reel, tcIn, tcOut, mos, obs
       ];
 
       sheet.appendRow(rowData.map((val) => TextCellValue(val)).toList());
@@ -133,9 +137,10 @@ class ReportExportService {
     // Add Metadata to CSV as well (optional but good for completeness)
     csvBuffer.writeln('PRODUCCIÓN:,${_escapeCsv(metadata.production)},UNIDAD:,${_escapeCsv(metadata.unit)}');
     csvBuffer.writeln('PRODUCTOR:,${_escapeCsv(metadata.producer)},DÍA:,${_escapeCsv(metadata.day)}');
-    csvBuffer.writeln('NOMENCLATURA:,${_escapeCsv(metadata.nomenclature)},FORMATO:,${_escapeCsv(metadata.format)}');
-    csvBuffer.writeln('LOCACIÓN:,${_escapeCsv(metadata.location)},ING. RESPONSABLE:,${_escapeCsv(metadata.responsibleEngineer)}');
-    csvBuffer.writeln('FECHA:,${_escapeCsv(metadata.date)},INGESTADOR:,${_escapeCsv(metadata.ingestor)}');
+    csvBuffer.writeln('NOMENCLATURA:,${_escapeCsv(metadata.nomenclature)},FRAME RATE:,${_escapeCsv(metadata.frameRate)}');
+    csvBuffer.writeln('LOCACIÓN:,${_escapeCsv(metadata.location)},VIDEO CODEC:,${_escapeCsv(metadata.videoCodec)}');
+    csvBuffer.writeln('FECHA:,${_escapeCsv(metadata.date)},AUDIO FORMAT:,${_escapeCsv(metadata.audioFormat)}');
+    csvBuffer.writeln('ING. RESPONSABLE:,${_escapeCsv(metadata.responsibleEngineer)},INGESTADOR:,${_escapeCsv(metadata.ingestor)}');
     csvBuffer.writeln('FECHA EXPORTACIÓN:,${formattedTimestamp}');
     csvBuffer.writeln(); // Empty row
 
