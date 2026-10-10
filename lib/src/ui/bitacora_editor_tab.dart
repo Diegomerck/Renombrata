@@ -73,9 +73,16 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         children: [
           Padding(
             padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Row(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final double width = constraints.maxWidth > 900 ? constraints.maxWidth : 900;
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints.tightFor(width: width),
+                    child: Column(
+                      children: [
+                        Row(
                   children: [
                     Expanded(child: _buildTextField('Producción', meta.production, (v) => _updateMetadata(meta.copyWith(production: v)))),
                     const SizedBox(width: 8),
@@ -105,7 +112,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     const SizedBox(width: 8),
                     Expanded(child: _buildFrameRateDropdown(meta.frameRate, (v) => _updateMetadata(meta.copyWith(frameRate: v ?? '23.98')))),
                     const SizedBox(width: 8),
-                    Expanded(child: _buildTextField('Video Codec', meta.videoCodec, (v) => _updateMetadata(meta.copyWith(videoCodec: v)))),
+                    Expanded(child: _buildVideoCodecAutocomplete(meta.videoCodec, (v) => _updateMetadata(meta.copyWith(videoCodec: v)))),
                     const SizedBox(width: 8),
                     Expanded(child: _buildTextField('Audio Format', meta.audioFormat, (v) => _updateMetadata(meta.copyWith(audioFormat: v)))),
                   ],
@@ -120,6 +127,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                   ),
                 ),
               ],
+                    ),
+                  ),
+                );
+              },
             ),
           ),
         ],
@@ -139,6 +150,64 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     );
   }
 
+  Widget _buildVideoCodecAutocomplete(String value, ValueChanged<String> onChanged) {
+    const options = [
+      'XDCAM HD422 (50 Mbps)',
+      'XAVC Intra',
+      'XAVC Long GOP',
+      'ProRes 422 HQ',
+      'ProRes 422',
+      'ProRes 422 LT',
+      'ProRes 4444',
+      'Sony X-OCN',
+      'ARRIRAW',
+      'REDCODE RAW (R3D)',
+      'Cinema RAW Light (CRM)',
+      'Blackmagic RAW (BRAW)',
+      'DNxHD',
+      'DNxHR',
+      'H.264 (AVC)',
+      'H.265 (HEVC)',
+    ];
+
+    return Autocomplete<String>(
+      initialValue: TextEditingValue(text: value),
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        if (textEditingValue.text == '') {
+          return const Iterable<String>.empty();
+        }
+        return options.where((String option) {
+          return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+        });
+      },
+      onSelected: (String selection) {
+        onChanged(selection);
+      },
+      fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController, FocusNode fieldFocusNode, VoidCallback onFieldSubmitted) {
+        return Focus(
+          onFocusChange: (hasFocus) {
+            if (!hasFocus) {
+              onChanged(fieldTextEditingController.text);
+            }
+          },
+          child: TextFormField(
+            controller: fieldTextEditingController,
+            focusNode: fieldFocusNode,
+            decoration: const InputDecoration(
+              labelText: 'Video Codec',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onFieldSubmitted: (String value) {
+              onFieldSubmitted();
+              onChanged(value);
+            },
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildFrameRateDropdown(String value, ValueChanged<String?> onChanged) {
     const options = ['23.98', '24', '25', '29.97nd', '29.97df', '30nd', '30df'];
     final effectiveValue = options.contains(value) ? value : '23.98';
@@ -155,66 +224,135 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     );
   }
 
+  void _addNewRecord() {
+    final newRecords = List<ShotRecord>.from(widget.project.log.records);
+    newRecords.add(ShotRecord(
+      chapter: '',
+      scene: '',
+      plane: '',
+      take: '',
+      cameras: [],
+      reel: widget.project.defaultReel,
+    ));
+    _updateRecords(newRecords);
+  }
+
   Widget _buildDataGrid() {
     final records = widget.project.log.records;
-    final double totalWidth = 962 + (widget.project.cameraNames.length * 100).toDouble();
     
-    return Card(
-      key: ValueKey('grid_${widget.project.cameraNames.join("_")}_${records.length}'),
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SizedBox(
-          width: totalWidth,
+    if (records.isEmpty) {
+      return Card(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        child: Center(
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              _buildGridHeader(),
-              Expanded(
-                child: ReorderableListView(
-                  buildDefaultDragHandles: false,
-                  onReorder: (oldIndex, newIndex) {
-                    setState(() {
-                      if (oldIndex < newIndex) {
-                        newIndex -= 1;
-                      }
-                      final newRecords = List<ShotRecord>.from(records);
-                      final item = newRecords.removeAt(oldIndex);
-                      newRecords.insert(newIndex, item);
-                      _updateRecords(newRecords);
-                    });
-                  },
-                  children: [
-                    for (int i = 0; i < records.length; i++)
-                      _buildGridRow(i, records[i]),
-                  ],
-                ),
+              Icon(Icons.movie_filter_outlined, size: 64, color: Theme.of(context).colorScheme.primary.withOpacity(0.5)),
+              const SizedBox(height: 16),
+              const Text('No hay tomas en esta bitácora', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                'Puedes importar una bitácora (.xlsx) o agregar una nueva toma manualmente para comenzar.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Agregar Primera Toma'),
+                onPressed: _addNewRecord,
               ),
             ],
           ),
         ),
+      );
+    }
+
+    return Card(
+      key: ValueKey('grid_${widget.project.cameraNames.join("_")}_${records.length}'),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: [
+          _buildGridHeader(),
+          Expanded(
+            child: ReorderableListView(
+              buildDefaultDragHandles: false,
+              onReorder: (oldIndex, newIndex) {
+                setState(() {
+                  if (oldIndex < newIndex) {
+                    newIndex -= 1;
+                  }
+                  final newRecords = List<ShotRecord>.from(records);
+                  final item = newRecords.removeAt(oldIndex);
+                  newRecords.insert(newIndex, item);
+                  _updateRecords(newRecords);
+                });
+              },
+              children: [
+                for (int i = 0; i < records.length; i++)
+                  _buildGridRow(i, records[i]),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildGridHeader() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
     return Container(
-      color: Colors.grey.shade200,
-      padding: const EdgeInsets.all(8),
-      child: Row(
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF282832) : Colors.grey.shade200,
+        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : Colors.grey.shade300)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: Column(
         children: [
-          const SizedBox(width: 40), // For drag handle
-          const SizedBox(width: 40, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 80, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 80, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 80, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
-          for (var cam in widget.project.cameraNames)
-            SizedBox(width: 100, child: Text('Clip $cam', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 80, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 100, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 100, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 48, child: Text('MOS', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 250, child: Text('Observaciones', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 48), // Action column
+          Row(
+            children: [
+              const SizedBox(width: 20),
+              const SizedBox(width: 20, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 220, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              const SizedBox(width: 60, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              const SizedBox(width: 55, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              for (var cam in widget.project.cameraNames)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8.0),
+                  child: SizedBox(
+                    width: 85, 
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Clip Cam', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 11)),
+                        Text('"$cam"', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      ],
+                    )
+                  ),
+                ),
+              const SizedBox(width: 80, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 48), // Action column
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const SizedBox(width: 40),
+              const SizedBox(width: 130, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              const SizedBox(width: 130, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              const SizedBox(width: 60, child: Text('MOS', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Observaciones', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 48), // Action column
+            ],
+          ),
         ],
       ),
     );
@@ -248,90 +386,135 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       updateRecord(record.copyWith(cameras: updatedCameras));
     }
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       key: ValueKey(record.id),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
-        border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF2E2E38) : Colors.grey.shade300)),
       ),
-      child: Row(
+      child: Column(
         children: [
-          ReorderableDragStartListener(
-            index: index,
-            child: const SizedBox(width: 40, child: MouseRegion(cursor: SystemMouseCursors.grab, child: Icon(Icons.drag_indicator, color: Colors.grey))),
+          Row(
+            children: [
+              ReorderableDragStartListener(
+                index: index,
+                child: const SizedBox(width: 20, child: MouseRegion(cursor: SystemMouseCursors.grab, child: Icon(Icons.drag_indicator, color: Colors.grey))),
+              ),
+              SizedBox(width: 20, child: Text('${index + 1}')),
+              SizedBox(width: 220, child: _buildGridCell(record.scene, (v) => updateRecord(record.copyWith(scene: v)), hintText: 'Escena')),
+              const SizedBox(width: 8),
+              SizedBox(width: 60, child: _buildGridCell(record.plane ?? '', (v) => updateRecord(record.copyWith(plane: v)), hintText: 'Plano')),
+              const SizedBox(width: 8),
+              SizedBox(width: 55, child: _buildGridCell(record.take, (v) => updateRecord(record.copyWith(take: v)), hintText: 'Toma')),
+              const SizedBox(width: 8),
+              for (var cam in widget.project.cameraNames)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8.0),
+                  child: SizedBox(width: 85, child: _buildGridCell(getClipForCam(cam), (v) => updateCam(cam, v), hintText: 'Clip $cam')),
+                ),
+              SizedBox(width: 80, child: _buildGridCell(record.reel, (v) => updateRecord(record.copyWith(reel: v)), hintText: 'Reel')),
+              SizedBox(
+                width: 48,
+                child: IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('¿Eliminar toma?'),
+                        content: Text('¿Estás seguro de que deseas eliminar la Toma ${record.take} (Escena ${record.scene})? Podrás recuperarla usando "Deshacer eliminación".'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('Cancelar'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.of(ctx).pop(true),
+                            child: const Text('Eliminar'),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirm == true) {
+                      setState(() {
+                        _lastDeletedRecord = record;
+                        _lastDeletedIndex = index;
+                      });
+                      final newRecords = List<ShotRecord>.from(widget.project.log.records);
+                      newRecords.removeAt(index);
+                      _updateRecords(newRecords);
+                    }
+                  },
+                ),
+              ),
+            ],
           ),
-          SizedBox(width: 40, child: Text('${index + 1}')),
-          SizedBox(width: 80, child: _buildGridCell(record.scene, (v) => updateRecord(record.copyWith(scene: v)))),
-          SizedBox(width: 80, child: _buildGridCell(record.plane ?? '', (v) => updateRecord(record.copyWith(plane: v)))),
-          SizedBox(width: 80, child: _buildGridCell(record.take, (v) => updateRecord(record.copyWith(take: v)))),
-          for (var cam in widget.project.cameraNames)
-            SizedBox(width: 100, child: _buildGridCell(getClipForCam(cam), (v) => updateCam(cam, v))),
-          SizedBox(width: 80, child: _buildGridCell(record.reel, (v) => updateRecord(record.copyWith(reel: v)))),
-          SizedBox(
-            width: 100, 
-            child: Focus(
-              onFocusChange: (focused) {
-                if (!focused && record.tcIn != null && record.tcIn!.isNotEmpty) {
-                  updateRecord(record.copyWith(tcIn: TimecodeUtils.normalize(record.tcIn!, widget.project.log.metadata.frameRate)));
-                }
-              },
-              child: _buildGridCell(record.tcIn ?? '', (v) => updateRecord(record.copyWith(tcIn: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)])
-            )
-          ),
-          SizedBox(
-            width: 100, 
-            child: Focus(
-              onFocusChange: (focused) {
-                if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
-                  updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
-                }
-              },
-              child: _buildGridCell(record.tcOut ?? '', (v) => updateRecord(record.copyWith(tcOut: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)])
-            )
-          ),
-          SizedBox(
-            width: 48,
-            child: Checkbox(
-              value: record.isMos,
-              onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
-            ),
-          ),
-          SizedBox(width: 250, child: _buildGridCell(record.observations ?? '', (v) => updateRecord(record.copyWith(observations: v)))),
-          SizedBox(
-            width: 48,
-            child: IconButton(
-              icon: const Icon(Icons.delete, color: Colors.red),
-              onPressed: () {
-                setState(() {
-                  _lastDeletedRecord = record;
-                  _lastDeletedIndex = index;
-                });
-                final newRecords = List<ShotRecord>.from(widget.project.log.records);
-                newRecords.removeAt(index);
-                _updateRecords(newRecords);
-              },
-            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const SizedBox(width: 40),
+              SizedBox(
+                width: 130, 
+                child: Focus(
+                  onFocusChange: (focused) {
+                    if (!focused && record.tcIn != null && record.tcIn!.isNotEmpty) {
+                      updateRecord(record.copyWith(tcIn: TimecodeUtils.normalize(record.tcIn!, widget.project.log.metadata.frameRate)));
+                    }
+                  },
+                  child: _buildGridCell(record.tcIn ?? '', (v) => updateRecord(record.copyWith(tcIn: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC In (00:00:00:00)')
+                )
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 130, 
+                child: Focus(
+                  onFocusChange: (focused) {
+                    if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
+                      updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
+                    }
+                  },
+                  child: _buildGridCell(record.tcOut ?? '', (v) => updateRecord(record.copyWith(tcOut: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC Out (00:00:00:00)')
+                )
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 60,
+                child: Checkbox(
+                  value: record.isMos,
+                  onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: _buildGridCell(record.observations ?? '', (v) => updateRecord(record.copyWith(observations: v)), hintText: 'Observaciones / Notas del director')),
+              const SizedBox(width: 48),
+            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildGridCell(String value, ValueChanged<String> onChanged, {List<TextInputFormatter>? formatters}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: TextFormField(
-        initialValue: value,
-        inputFormatters: formatters,
-        decoration: const InputDecoration(
-          isDense: true,
-          contentPadding: EdgeInsets.all(8),
-          border: OutlineInputBorder(),
+  Widget _buildGridCell(String value, ValueChanged<String> onChanged, {List<TextInputFormatter>? formatters, String? hintText}) {
+    return TextFormField(
+      initialValue: value,
+      inputFormatters: formatters,
+      decoration: InputDecoration(
+        isDense: true,
+        contentPadding: const EdgeInsets.all(8),
+        border: const OutlineInputBorder(),
+        hintText: hintText,
+        hintStyle: TextStyle(
+          color: Theme.of(context).hintColor.withOpacity(0.4),
+          fontSize: 11,
         ),
-        style: const TextStyle(fontSize: 12),
-        onChanged: onChanged,
       ),
+      style: const TextStyle(fontSize: 12),
+      onChanged: onChanged,
     );
   }
 
@@ -434,18 +617,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           ElevatedButton.icon(
-            onPressed: () {
-              final newRecords = List<ShotRecord>.from(records);
-              newRecords.add(ShotRecord(
-                chapter: '',
-                scene: '',
-                plane: '',
-                take: '',
-                cameras: [],
-                reel: widget.project.defaultReel,
-              ));
-              _updateRecords(newRecords);
-            },
+            onPressed: _addNewRecord,
             icon: const Icon(Icons.add),
             label: const Text('Nueva Toma'),
           ),

@@ -9,6 +9,11 @@ void main() {
       expect(TimecodeUtils.normalize('123', '24'), '12:30:00:00');
     });
 
+    test('treats 6 digits as HH:MM:SS and appends 00 for frames', () {
+      expect(TimecodeUtils.normalize('010000', '24'), '01:00:00:00');
+      expect(TimecodeUtils.normalize('123456', '24'), '12:34:56:00');
+    });
+
     test('clamps hours, minutes, seconds', () {
       expect(TimecodeUtils.normalize('25656500', '24'), '23:59:59:00');
     });

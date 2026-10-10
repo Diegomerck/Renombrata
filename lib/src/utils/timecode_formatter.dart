@@ -8,6 +8,11 @@ class TimecodeUtils {
     String digits = timecode.replaceAll(RegExp(r'[^0-9]'), '');
     if (digits.isEmpty) return timecode;
 
+    if (digits.length == 6) {
+      // Treat as HHMMSS and append 00 for frames
+      digits = digits + '00';
+    }
+
     // pad to 8 digits with zeros on the right
     digits = digits.padRight(8, '0');
 

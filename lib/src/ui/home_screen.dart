@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
@@ -12,6 +13,7 @@ import 'package:renombrata/src/services/report_export_service.dart';
 import 'package:renombrata/src/services/project_service.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/ui/bitacora_editor_tab.dart';
+import '../../main.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -467,6 +469,22 @@ class _HomeScreenState extends State<HomeScreen> {
           title: Text('Renombrata - $projectTitle'),
           backgroundColor: Theme.of(context).colorScheme.inversePrimary,
           actions: [
+            ValueListenableBuilder<ThemeMode>(
+              valueListenable: themeNotifier,
+              builder: (context, currentMode, child) {
+                final isDark = currentMode == ThemeMode.dark;
+                return IconButton(
+                  icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+                  tooltip: 'Cambiar modo oscuro / claro',
+                  onPressed: () async {
+                    final newMode = isDark ? ThemeMode.light : ThemeMode.dark;
+                    themeNotifier.value = newMode;
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool('is_dark_mode', !isDark);
+                  },
+                );
+              },
+            ),
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Actualizar Medios y Bitácora',
