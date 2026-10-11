@@ -13,10 +13,20 @@ import 'package:renombrata/src/services/report_export_service.dart';
 import 'package:renombrata/src/services/project_service.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/ui/bitacora_editor_tab.dart';
+import 'package:renombrata/src/ui/conflict_resolver_dialog.dart';
+import 'package:path/path.dart' as p;
+import 'package:desktop_drop/desktop_drop.dart';
 import '../../main.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final RenombrataProject? initialProject;
+  final DryRunReport? initialReport;
+
+  const HomeScreen({
+    super.key,
+    this.initialProject,
+    this.initialReport,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -35,24 +45,35 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _renameMetadata = true;
 
   DryRunReport? _report;
+  DryRunReport? _baseReport;
   bool _isLoading = false;
   List<Map<String, dynamic>> _renameHistory = [];
+  Map<String, String?> _manualOverrides = {};
+  bool _isDragging = false;
 
   String? _notificationMessage;
   bool _isNotificationError = false;
   Timer? _notificationTimer;
 
   final TextEditingController _reelController = TextEditingController();
+  final ScrollController _horizontalTableScrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialProject != null) {
+      _project = widget.initialProject!;
+    }
+    if (widget.initialReport != null) {
+      _report = widget.initialReport;
+    }
     _reelController.text = _project.defaultReel;
   }
 
   @override
   void dispose() {
     _reelController.dispose();
+    _horizontalTableScrollController.dispose();
     _notificationTimer?.cancel();
     super.dispose();
   }
@@ -126,6 +147,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _projectPath = null;
       _isDirty = false;
       _reelController.text = _project.defaultReel;
+      _manualOverrides = {};
+      _baseReport = null;
     });
     _generatePreview();
   }
@@ -147,6 +170,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _projectPath = result.single.path!;
           _isDirty = false;
           _reelController.text = _project.defaultReel;
+          _manualOverrides = {};
+          _baseReport = null;
         });
         _generatePreview();
         if (mounted) {
@@ -243,6 +268,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _project = _project.copyWith(log: log);
           _isDirty = true;
           _reelController.text = _computeDefaultReel(_project.activeCamera);
+          _manualOverrides = {};
+          _baseReport = null;
         });
         _generatePreview();
         if (mounted) {
@@ -264,23 +291,46 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _pickMediaFolder() async {
-    String? selectedDirectory = await FilePicker.getDirectoryPath();
+    try {
+      String? selectedDirectory = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Seleccionar carpeta de medios / clips',
+      );
 
-    if (selectedDirectory != null) {
-      setState(() {
-        _mediaFolderPath = selectedDirectory;
-      });
-      _generatePreview();
+      if (selectedDirectory != null) {
+        setState(() {
+          _mediaFolderPath = selectedDirectory;
+          _manualOverrides = {};
+        });
+        await _generatePreview();
+        if (mounted) {
+          final folderName = selectedDirectory.split(Platform.pathSeparator).last;
+          final totalScanned = _report?.proposals.length ?? 0;
+          if (_project.log.records.isEmpty) {
+            _showNotification('Carpeta "$folderName" seleccionada ($totalScanned clips detectados). Importa un Excel o crea tomas en la Bitácora Digital para generar propuestas.');
+          } else {
+            _showNotification('Carpeta "$folderName" cargada correctamente ($totalScanned clips analizados).');
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        _showNotification('Error al abrir selector de carpeta: $e', isError: true);
+      }
     }
   }
 
-  Future<void> _generatePreview() async {
+  Future<void> _generatePreview({Map<String, String?>? manualOverrides}) async {
     if (_mediaFolderPath == null) {
       setState(() {
         _report = null;
+        _baseReport = null;
         _renameHistory = [];
       });
       return;
+    }
+
+    if (manualOverrides != null) {
+      _manualOverrides = manualOverrides;
     }
 
     setState(() {
@@ -294,15 +344,28 @@ class _HomeScreenState extends State<HomeScreen> {
         searchSubdirectories: true,
       );
 
-      final report = ClipMatcherService.matchFiles(
+      final baseReport = ClipMatcherService.matchFiles(
         scannedFiles: scannedFiles,
         log: _project.log,
         targetCamera: _project.activeCamera,
         reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
         renameHistory: history,
+        manualOverrides: const {},
       );
 
+      final report = _manualOverrides.isEmpty
+          ? baseReport
+          : ClipMatcherService.matchFiles(
+              scannedFiles: scannedFiles,
+              log: _project.log,
+              targetCamera: _project.activeCamera,
+              reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
+              renameHistory: history,
+              manualOverrides: _manualOverrides,
+            );
+
       setState(() {
+        _baseReport = baseReport;
         _report = report;
         _renameHistory = history;
       });
@@ -368,6 +431,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       // Call _generatePreview to reload history and update UI accurately
+      _manualOverrides = {};
+      _baseReport = null;
       await _generatePreview();
 
       if (mounted) {
@@ -381,6 +446,28 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _openConflictResolver() async {
+    if (_report == null && _baseReport == null) return;
+
+    final reportToUse = _baseReport ?? _report!;
+
+    final result = await showDialog<Map<String, String?>>(
+      context: context,
+      builder: (ctx) => ConflictResolverDialog(
+        report: reportToUse,
+        log: _project.log,
+        currentOverrides: _manualOverrides,
+      ),
+    );
+
+    if (result != null) {
+      setState(() {
+        _manualOverrides = result;
+      });
+      await _generatePreview(manualOverrides: _manualOverrides);
     }
   }
 
@@ -521,31 +608,51 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-        body: TabBarView(
-          children: [
-            // Tab 1: Editor
-            BitacoraEditorTab(
-              project: _project,
-              onProjectChanged: _updateProject,
-            ),
-            // Tab 2: Conciliación
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+        body: DropTarget(
+          onDragEntered: (details) => setState(() => _isDragging = true),
+          onDragExited: (details) => setState(() => _isDragging = false),
+          onDragDone: (details) {
+            setState(() => _isDragging = false);
+            _handleDroppedFiles(details.files);
+          },
+          child: Stack(
+            children: [
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildControlsBar(),
                   _buildNotificationBanner(),
-                  const SizedBox(height: 16),
                   Expanded(
-                    child: _buildPreviewTable(),
+                    child: TabBarView(
+                      children: [
+                        // Tab 1: Editor
+                        BitacoraEditorTab(
+                          project: _project,
+                          onProjectChanged: _updateProject,
+                        ),
+                        // Tab 2: Conciliación
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildControlsBar(),
+                              const SizedBox(height: 16),
+                              Expanded(
+                                child: _buildPreviewTable(),
+                              ),
+                              const SizedBox(height: 16),
+                              _buildFooter(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 16),
-                  _buildFooter(),
                 ],
               ),
-            ),
-          ],
+              if (_isDragging) _buildDragDropOverlay(),
+            ],
+          ),
         ),
       ),
     );
@@ -555,10 +662,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return Card(
       elevation: 2,
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
         child: Wrap(
-          spacing: 16,
-          runSpacing: 16,
+          spacing: 12,
+          runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             ElevatedButton.icon(
@@ -566,7 +673,6 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.description),
               label: const Text('Importar Excel'),
             ),
-            const SizedBox(width: 8),
             DropdownButton<String>(
               value: _project.cameraNames.contains(_project.activeCamera) 
                   ? _project.activeCamera 
@@ -598,34 +704,43 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               },
             ),
-            const SizedBox(width: 8),
             SizedBox(
-              width: 140,
+              width: 130,
               child: TextField(
                 controller: _reelController,
                 decoration: InputDecoration(
                   labelText: 'Reel activo',
                   hintText: _computeDefaultReel(_project.activeCamera),
                   border: const OutlineInputBorder(),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  isDense: true,
                 ),
                 onChanged: (val) {
                   _generatePreview();
                 },
               ),
             ),
-            const SizedBox(width: 8),
             ElevatedButton.icon(
               onPressed: _pickMediaFolder,
               icon: const Icon(Icons.folder),
               label: const Text('Selector de Carpeta de Medios'),
             ),
             if (_mediaFolderPath != null)
-              Text(
-                _mediaFolderPath!.split(Platform.pathSeparator).last,
-                style: const TextStyle(fontStyle: FontStyle.italic),
+              Chip(
+                avatar: const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                label: Text(
+                  _mediaFolderPath!.split(Platform.pathSeparator).last,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+                deleteIcon: const Icon(Icons.close, size: 14),
+                onDeleted: () {
+                  setState(() {
+                    _mediaFolderPath = null;
+                    _report = null;
+                    _renameHistory = [];
+                  });
+                },
               ),
-            const SizedBox(width: 8),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -637,9 +752,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     });
                   },
                 ),
-                const Expanded(
-                  child: Text('Renombrar archivos de metadatos (.XML) asociados'),
-                ),
+                const SizedBox(width: 4),
+                const Text('Renombrar metadatos (.XML)'),
               ],
             ),
           ],
@@ -652,7 +766,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_notificationMessage == null) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(top: 16.0),
+      padding: const EdgeInsets.fromLTRB(16.0, 12.0, 16.0, 4.0),
       child: Material(
         elevation: 4,
         borderRadius: BorderRadius.circular(8),
@@ -695,8 +809,43 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_report == null) {
-      return const Center(
-        child: Text('Seleccione la bitácora y la carpeta de medios para ver la vista previa.'),
+      if (_project.log.records.isNotEmpty) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.folder_open, size: 52, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.7)),
+              const SizedBox(height: 12),
+              Text(
+                'Bitácora activa con ${_project.log.records.length} tomas registradas',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Haz clic en "Selector de Carpeta de Medios" para conciliar los clips con la Cámara ${_project.activeCamera}.',
+                style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+              ),
+            ],
+          ),
+        );
+      }
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.video_library_outlined, size: 52, color: Theme.of(context).hintColor.withValues(alpha: 0.5)),
+            const SizedBox(height: 12),
+            const Text(
+              'Bienvenido al Renombrador de Medios',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Puedes seleccionar una Carpeta de Medios o Importar un Excel para comenzar.',
+              style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+            ),
+          ],
+        ),
       );
     }
 
@@ -705,37 +854,111 @@ class _HomeScreenState extends State<HomeScreen> {
       displayProposals = displayProposals.where((p) => !p.isCompanionFile).toList();
     }
 
-    return Card(
-      child: SingleChildScrollView(
-        child: DataTable(
-          headingTextStyle: const TextStyle(fontWeight: FontWeight.bold),
-          columns: const [
-            DataColumn(label: Text('Archivo Original')),
-            DataColumn(label: Text('Nombre Propuesto')),
-            DataColumn(label: Text('Escena / Toma')),
-            DataColumn(label: Text('Estado')),
+    if (displayProposals.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.find_in_page_outlined, size: 48, color: Theme.of(context).hintColor),
+            const SizedBox(height: 12),
+            Text(
+              'No se detectaron archivos de video para la Cámara ${_project.activeCamera} en esta carpeta.',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Verifica que la carpeta contenga clips con el prefijo "${_project.activeCamera}" o selecciona otra carpeta.',
+              style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+            ),
           ],
-          rows: displayProposals.map((p) {
-            String original = p.originalFilePath != null ? p.originalFilePath!.split(Platform.pathSeparator).last : '—';
-            String proposed = p.proposedFileName;
-            if (p.status == ProposalStatus.unmatchedClip) proposed = '—';
-
-            String sceneTake = '—';
-            if (p.associatedRecord != null) {
-              String takeStr = p.associatedRecord!.take;
-              String displayTake = takeStr.toUpperCase().startsWith('T') ? takeStr : 'T$takeStr';
-              sceneTake = 'Esc. ${p.associatedRecord!.scene} - $displayTake';
-            }
-
-            return DataRow(cells: [
-              DataCell(Text(original)),
-              DataCell(Text(proposed)),
-              DataCell(Text(sceneTake)),
-              DataCell(_buildStatusBadge(p.status)),
-            ]);
-          }).toList(),
         ),
-      ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_project.log.records.isEmpty)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.shade700.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.amber.shade800, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Se detectaron ${displayProposals.length} archivos en la carpeta de medios. La bitácora aún no tiene tomas registradas; importa un Excel o usa la pestaña "Bitácora Digital" para asignar nombres propuestos.',
+                    style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.dark ? Colors.amber.shade200 : Colors.amber.shade900,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: Card(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.vertical,
+              child: Scrollbar(
+                controller: _horizontalTableScrollController,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _horizontalTableScrollController,
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    headingTextStyle: const TextStyle(fontWeight: FontWeight.bold),
+                    columns: const [
+                      DataColumn(label: Text('Archivo Original')),
+                      DataColumn(label: Text('Nombre Propuesto')),
+                      DataColumn(label: Text('Escena / Toma')),
+                      DataColumn(label: Text('Estado')),
+                    ],
+                    rows: displayProposals.map((p) {
+                      String original = p.originalFilePath != null ? p.originalFilePath!.split(Platform.pathSeparator).last : '—';
+                      String proposed = p.proposedFileName;
+                      if (p.status == ProposalStatus.unmatchedClip) proposed = '—';
+
+                      String sceneTake = '—';
+                      if (p.associatedRecord != null) {
+                        String takeStr = p.associatedRecord!.take;
+                        String displayTake = takeStr.toUpperCase().startsWith('T') ? takeStr : 'T$takeStr';
+                        sceneTake = 'Esc. ${p.associatedRecord!.scene} - $displayTake';
+                      }
+
+                      return DataRow(cells: [
+                        DataCell(Text(original)),
+                        DataCell(Text(proposed)),
+                        DataCell(Text(sceneTake)),
+                        DataCell(
+                          p.status == ProposalStatus.conflict
+                              ? Tooltip(
+                                  message: 'Haz clic para resolver este conflicto',
+                                  child: InkWell(
+                                    onTap: _openConflictResolver,
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: _buildStatusBadge(p.status),
+                                  ),
+                                )
+                              : _buildStatusBadge(p.status),
+                        ),
+                      ]);
+                    }).toList(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -771,7 +994,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: bgColor,
         borderRadius: BorderRadius.circular(12),
@@ -794,47 +1017,348 @@ class _HomeScreenState extends State<HomeScreen> {
       return true;
     }).length ?? 0;
 
+    int conflictCount = _report?.proposals.where((p) => p.status == ProposalStatus.conflict && !p.isCompanionFile).length ?? 0;
     bool hasConflicts = _report?.proposals.any((p) => p.status == ProposalStatus.conflict) ?? false;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Expanded(
-          child: Text(
-            '$listos listos | $faltantes faltantes en disco | $noRegistrados no registrados',
-            style: const TextStyle(fontWeight: FontWeight.bold),
+    final summaryText = '$listos listos | $faltantes faltantes en disco | $noRegistrados no registrados';
+
+    final actionButtons = <Widget>[
+      if (hasConflicts)
+        FilledButton.icon(
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.orange.shade800,
+            foregroundColor: Colors.white,
           ),
+          onPressed: _openConflictResolver,
+          icon: const Icon(Icons.warning_amber, size: 18),
+          label: Text('Resolver conflictos ($conflictCount)'),
+        )
+      else if (_manualOverrides.isNotEmpty)
+        OutlinedButton.icon(
+          icon: const Icon(Icons.tune, size: 18),
+          label: Text('Editar resoluciones (${_manualOverrides.length})'),
+          onPressed: _openConflictResolver,
         ),
-        Row(
-          mainAxisSize: MainAxisSize.min,
+      if (_report != null && _report!.proposals.isNotEmpty)
+        OutlinedButton.icon(
+          onPressed: _exportReport,
+          icon: const Icon(Icons.file_download),
+          label: const Text('Exportar Reporte'),
+        ),
+      if (_renameHistory.isNotEmpty)
+        OutlinedButton(
+          onPressed: _undoRename,
+          child: const Text('Deshacer renombrado'),
+        ),
+      ElevatedButton(
+        onPressed: (readyToRename > 0 && !hasConflicts) ? _executeRename : null,
+        style: ElevatedButton.styleFrom(
+          disabledBackgroundColor: Colors.grey.shade300,
+        ),
+        child: const Text('Renombrar archivos'),
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 1050) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                summaryText,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: actionButtons,
+              ),
+            ],
+          );
+        }
+
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            if (_report != null && _report!.proposals.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: OutlinedButton.icon(
-                  onPressed: _exportReport,
-                  icon: const Icon(Icons.file_download),
-                  label: const Text('Exportar Reporte'),
-                ),
+            Expanded(
+              child: Text(
+                summaryText,
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-            if (_renameHistory.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: OutlinedButton(
-                  onPressed: _undoRename,
-                  child: const Text('Deshacer renombrado'),
-                ),
-              ),
-            ElevatedButton(
-              onPressed: (readyToRename > 0 && !hasConflicts) ? _executeRename : null,
-              style: ElevatedButton.styleFrom(
-                disabledBackgroundColor: Colors.grey.shade300,
-              ),
-              child: const Text('Renombrar archivos'),
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (int i = 0; i < actionButtons.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 8),
+                  actionButtons[i],
+                ],
+              ],
             ),
           ],
-        ),
-      ],
+        );
+      },
     );
   }
+
+  Future<void> _handleDroppedFiles(List<dynamic> files) async {
+    if (files.isEmpty) return;
+
+    bool anyHandled = false;
+    for (final item in files) {
+      final String path = item.path as String;
+      if (path.isEmpty) continue;
+
+      // 1. Directory -> Media Folder
+      if (Directory(path).existsSync()) {
+        setState(() {
+          _mediaFolderPath = path;
+          _manualOverrides = {};
+          _baseReport = null;
+        });
+        await _generatePreview();
+        anyHandled = true;
+        if (mounted) {
+          _showNotification('Carpeta de medios cargada: ${p.basename(path)} (${_report?.proposals.length ?? 0} clips detectados)');
+        }
+        continue;
+      }
+
+      final lower = path.toLowerCase();
+
+      // 2. Excel File -> Bitácora (.xlsx, .xls)
+      if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+        setState(() {
+          _isLoading = true;
+        });
+        try {
+          final file = File(path);
+          final log = BitacoraParserService.parse(file);
+          setState(() {
+            _project = _project.copyWith(log: log);
+            _isDirty = true;
+            _reelController.text = _computeDefaultReel(_project.activeCamera);
+            _manualOverrides = {};
+            _baseReport = null;
+          });
+          await _generatePreview();
+          anyHandled = true;
+          if (mounted) {
+            _showNotification('Bitácora importada: ${p.basename(path)} (${log.records.length} tomas registradas)');
+          }
+        } catch (e) {
+          if (mounted) {
+            _showNotification('Error al leer la bitácora: Verifique que sea un archivo Excel válido', isError: true);
+          }
+        } finally {
+          if (mounted) {
+            setState(() {
+              _isLoading = false;
+            });
+          }
+        }
+        continue;
+      }
+
+      // 3. Project File -> (.renombrata, .json)
+      if (lower.endsWith('.renombrata') || lower.endsWith('.json')) {
+        final confirm = await _checkUnsavedChanges();
+        if (!confirm) return;
+
+        try {
+          final project = await ProjectService.loadProject(path);
+          setState(() {
+            _project = project;
+            _projectPath = path;
+            _isDirty = false;
+            _reelController.text = _project.defaultReel;
+            _manualOverrides = {};
+            _baseReport = null;
+          });
+          await _generatePreview();
+          anyHandled = true;
+          if (mounted) {
+            _showNotification('Proyecto cargado: ${p.basename(path)}');
+          }
+        } catch (e) {
+          if (mounted) {
+            _showNotification('Error al cargar proyecto: $e', isError: true);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!anyHandled && mounted) {
+      final firstFileName = p.basename(files.first.path as String);
+      _showNotification(
+        'Archivo no soportado: "$firstFileName". Formatos aceptados: carpetas de medios, Excel (.xlsx, .xls) o proyectos (.renombrata).',
+        isError: true,
+      );
+    }
+  }
+
+  Widget _buildDragDropOverlay() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Container(
+          color: isDark ? Colors.black54 : Colors.white70,
+          child: Center(
+            child: CustomPaint(
+              painter: _DashedBorderPainter(
+                color: primaryColor,
+                strokeWidth: 2.5,
+                dash: 8.0,
+                gap: 5.0,
+                radius: 20.0,
+              ),
+              child: Container(
+                width: 540,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 36),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF1E1E26).withValues(alpha: 0.95)
+                      : Colors.white.withValues(alpha: 0.95),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.25),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: primaryColor.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.file_download_outlined,
+                        size: 52,
+                        color: primaryColor,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'Suelta tus archivos aquí',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Suelta aquí carpetas de medios, archivos Excel (.xlsx) o proyectos (.renombrata)',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: Theme.of(context).hintColor,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        _buildOverlayBadge(Icons.folder_outlined, 'Carpeta de Medios', primaryColor),
+                        _buildOverlayBadge(Icons.table_chart_outlined, 'Bitácora (.xlsx, .xls)', Colors.green.shade600),
+                        _buildOverlayBadge(Icons.description_outlined, 'Proyecto (.renombrata)', Colors.purple.shade400),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOverlayBadge(IconData icon, String label, Color color) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: isDark ? 0.2 : 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: isDark ? color : color.withValues(alpha: 0.9),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DashedBorderPainter extends CustomPainter {
+  final Color color;
+  final double strokeWidth;
+  final double gap;
+  final double dash;
+  final double radius;
+
+  _DashedBorderPainter({
+    required this.color,
+    this.strokeWidth = 2.0,
+    this.dash = 6.0,
+    this.gap = 4.0,
+    this.radius = 16.0,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke;
+
+    final rrect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(radius),
+    );
+    final path = Path()..addRRect(rrect);
+
+    for (final metric in path.computeMetrics()) {
+      double distance = 0.0;
+      while (distance < metric.length) {
+        final double length = (distance + dash <= metric.length) ? dash : metric.length - distance;
+        final extractPath = metric.extractPath(distance, distance + length);
+        canvas.drawPath(extractPath, paint);
+        distance += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorderPainter oldDelegate) =>
+      color != oldDelegate.color || strokeWidth != oldDelegate.strokeWidth;
 }

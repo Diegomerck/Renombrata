@@ -21,18 +21,93 @@ class BitacoraEditorTab extends StatefulWidget {
 
 class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   bool _isHeaderExpanded = true;
-  ShotRecord? _lastDeletedRecord;
-  int? _lastDeletedIndex;
+  List<({int index, ShotRecord record})>? _lastDeletedRecords;
   final Set<String> _expandedRecordIds = {};
+  final Set<String> _selectedRecordIds = {};
 
   @override
   void didUpdateWidget(BitacoraEditorTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.project.log.metadata.production != widget.project.log.metadata.production || 
         oldWidget.project.log.metadata.date != widget.project.log.metadata.date) {
-      _lastDeletedRecord = null;
-      _lastDeletedIndex = null;
+      _lastDeletedRecords = null;
       _expandedRecordIds.clear();
+      _selectedRecordIds.clear();
+    }
+  }
+
+  Future<void> _deleteSingleRecord(int index, ShotRecord record) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Eliminar toma?'),
+        content: Text('¿Estás seguro de que deseas eliminar la Toma ${record.take} (Escena ${record.scene})? Podrás recuperarla usando "Deshacer eliminación".'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      setState(() {
+        _lastDeletedRecords = [(index: index, record: record)];
+        _expandedRecordIds.remove(record.id);
+        _selectedRecordIds.remove(record.id);
+      });
+      final newRecords = List<ShotRecord>.from(widget.project.log.records);
+      newRecords.removeAt(index);
+      _updateRecords(newRecords);
+    }
+  }
+
+  Future<void> _deleteSelectedRecords() async {
+    final count = _selectedRecordIds.length;
+    if (count == 0) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Eliminar tomas seleccionadas?'),
+        content: Text('¿Eliminar $count tomas seleccionadas? Podrás recuperarlas usando "Deshacer eliminación".'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      final records = widget.project.log.records;
+      final deleted = <({int index, ShotRecord record})>[];
+      for (int i = 0; i < records.length; i++) {
+        if (_selectedRecordIds.contains(records[i].id)) {
+          deleted.add((index: i, record: records[i]));
+        }
+      }
+
+      setState(() {
+        _lastDeletedRecords = deleted;
+        for (final item in deleted) {
+          _expandedRecordIds.remove(item.record.id);
+        }
+        _selectedRecordIds.clear();
+      });
+
+      final newRecords = records.where((r) => !deleted.any((d) => d.record.id == r.id)).toList();
+      _updateRecords(newRecords);
     }
   }
 
@@ -215,7 +290,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     final effectiveValue = options.contains(value) ? value : '23.98';
 
     return DropdownButtonFormField<String>(
-      value: effectiveValue,
+      initialValue: effectiveValue,
       decoration: const InputDecoration(
         labelText: 'Frame Rate',
         border: OutlineInputBorder(),
@@ -255,7 +330,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.movie_filter_outlined, size: 48, color: Theme.of(context).colorScheme.primary.withOpacity(0.5)),
+                Icon(Icons.movie_filter_outlined, size: 48, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5)),
                 const SizedBox(height: 12),
                 const Text('No hay tomas en esta bitácora', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 6),
@@ -282,30 +357,44 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     return Card(
       key: ValueKey('grid_${widget.project.cameraNames.join("_")}_${records.length}'),
       margin: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          _buildGridHeader(),
-          Expanded(
-            child: ReorderableListView(
-              buildDefaultDragHandles: false,
-              onReorder: (oldIndex, newIndex) {
-                setState(() {
-                  if (oldIndex < newIndex) {
-                    newIndex -= 1;
-                  }
-                  final newRecords = List<ShotRecord>.from(records);
-                  final item = newRecords.removeAt(oldIndex);
-                  newRecords.insert(newIndex, item);
-                  _updateRecords(newRecords);
-                });
-              },
-              children: [
-                for (int i = 0; i < records.length; i++)
-                  _buildGridRow(i, records[i]),
-              ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final double minGridWidth = 880.0 + (widget.project.cameraNames.length * 88.0);
+          final double gridWidth = constraints.maxWidth < minGridWidth ? minGridWidth : constraints.maxWidth;
+
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: gridWidth,
+              height: constraints.hasBoundedHeight ? constraints.maxHeight : null,
+              child: Column(
+                children: [
+                  _buildGridHeader(),
+                  Expanded(
+                    child: ReorderableListView(
+                      buildDefaultDragHandles: false,
+                      onReorder: (oldIndex, newIndex) {
+                        setState(() {
+                          if (oldIndex < newIndex) {
+                            newIndex -= 1;
+                          }
+                          final newRecords = List<ShotRecord>.from(records);
+                          final item = newRecords.removeAt(oldIndex);
+                          newRecords.insert(newIndex, item);
+                          _updateRecords(newRecords);
+                        });
+                      },
+                      children: [
+                        for (int i = 0; i < records.length; i++)
+                          _buildGridRow(i, records[i]),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -317,8 +406,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF282832) : Colors.grey.shade200,
-        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : Colors.grey.shade300)),
+        color: isDark ? const Color(0xFF282832) : const Color(0xFFE2E7F0),
+        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : const Color(0xFFCBD2DC))),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -352,6 +441,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           const SizedBox(width: 110, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
           const SizedBox(width: 8),
           const SizedBox(width: 110, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
           const Spacer(),
           SizedBox(
             width: 40,
@@ -369,7 +459,56 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               },
             ),
           ),
-          const SizedBox(width: 40),
+          SizedBox(
+            width: 70,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Checkbox(
+                  key: const ValueKey('master_select_all_checkbox'),
+                  tristate: true,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  value: records.isEmpty
+                      ? false
+                      : (_selectedRecordIds.length == records.length
+                          ? true
+                          : (_selectedRecordIds.isNotEmpty ? null : false)),
+                  onChanged: records.isEmpty
+                      ? null
+                      : (val) {
+                          setState(() {
+                            final allSelected = records.isNotEmpty && _selectedRecordIds.length == records.length;
+                            if (allSelected) {
+                              _selectedRecordIds.clear();
+                            } else {
+                              _selectedRecordIds.clear();
+                              _selectedRecordIds.addAll(records.map((r) => r.id));
+                            }
+                          });
+                        },
+                ),
+                const SizedBox(width: 4),
+                Tooltip(
+                  message: 'Eliminar tomas seleccionadas',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: _selectedRecordIds.isNotEmpty ? _deleteSelectedRecords : null,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 16,
+                        color: _selectedRecordIds.isNotEmpty
+                            ? Colors.red.shade400
+                            : (isDark ? Colors.grey.shade700 : Colors.grey.shade400),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -409,19 +548,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
     final cardColor = isDark
         ? (isEven ? const Color(0xFF16161B) : const Color(0xFF2C2C36))
-        : (isEven ? Colors.white : const Color(0xFFE8EBF0));
+        : (isEven ? Colors.white : const Color(0xFFDFE4ED));
 
     final cardBorderColor = isDark
         ? (isEven ? const Color(0xFF282832) : const Color(0xFF424250))
-        : (isEven ? Colors.grey.shade300 : const Color(0xFFCBD0D8));
+        : (isEven ? const Color(0xFFCBD2DC) : const Color(0xFFB0B9C7));
 
     final tier2Color = isDark
         ? (isEven ? const Color(0xFF101014) : const Color(0xFF22222A))
-        : (isEven ? const Color(0xFFF8F9FA) : const Color(0xFFDFE2E8));
+        : (isEven ? const Color(0xFFF1F3F7) : const Color(0xFFD3DAE5));
 
     final tier2BorderColor = isDark
         ? (isEven ? const Color(0xFF1F1F26) : const Color(0xFF383844))
-        : (isEven ? Colors.grey.shade200 : const Color(0xFFCBD0D8));
+        : (isEven ? const Color(0xFFCBD2DC) : const Color(0xFFB0B9C7));
 
     return Container(
       key: ValueKey(record.id),
@@ -436,9 +575,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         ),
         boxShadow: isDark ? [] : [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
+            color: Colors.black.withValues(alpha: isEven ? 0.04 : 0.02),
+            blurRadius: isEven ? 4 : 2,
+            offset: Offset(0, isEven ? 2 : 1),
           ),
         ],
       ),
@@ -507,6 +646,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                   child: _buildGridCell(record.tcOut ?? '', (v) => updateRecord(record.copyWith(tcOut: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC Out (00:00:00:00)'),
                 ),
               ),
+              const SizedBox(width: 8),
               const Spacer(),
               SizedBox(
                 width: 40,
@@ -525,39 +665,38 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 ),
               ),
               SizedBox(
-                width: 40,
-                child: IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  onPressed: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('¿Eliminar toma?'),
-                        content: Text('¿Estás seguro de que deseas eliminar la Toma ${record.take} (Escena ${record.scene})? Podrás recuperarla usando "Deshacer eliminación".'),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(ctx).pop(false),
-                            child: const Text('Cancelar'),
-                          ),
-                          ElevatedButton(
-                            onPressed: () => Navigator.of(ctx).pop(true),
-                            child: const Text('Eliminar'),
-                          ),
-                        ],
+                width: 70,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Checkbox(
+                      key: ValueKey('row_checkbox_${record.id}'),
+                      value: _selectedRecordIds.contains(record.id),
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      onChanged: (val) {
+                        setState(() {
+                          if (val == true) {
+                            _selectedRecordIds.add(record.id);
+                          } else {
+                            _selectedRecordIds.remove(record.id);
+                          }
+                        });
+                      },
+                    ),
+                    const SizedBox(width: 4),
+                    Tooltip(
+                      message: 'Eliminar toma',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => _deleteSingleRecord(index, record),
+                        child: const Padding(
+                          padding: EdgeInsets.all(4),
+                          child: Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                        ),
                       ),
-                    );
-
-                    if (confirm == true) {
-                      setState(() {
-                        _lastDeletedRecord = record;
-                        _lastDeletedIndex = index;
-                        _expandedRecordIds.remove(record.id);
-                      });
-                      final newRecords = List<ShotRecord>.from(widget.project.log.records);
-                      newRecords.removeAt(index);
-                      _updateRecords(newRecords);
-                    }
-                  },
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -603,16 +742,37 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   }
 
   Widget _buildGridCell(String value, ValueChanged<String> onChanged, {List<TextInputFormatter>? formatters, String? hintText}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return TextFormField(
       initialValue: value,
       inputFormatters: formatters,
       decoration: InputDecoration(
+        filled: true,
+        fillColor: isDark ? const Color(0xFF16161A) : Colors.white,
         isDense: true,
-        contentPadding: const EdgeInsets.all(8),
-        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
+          ),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: Theme.of(context).colorScheme.primary,
+            width: 1.5,
+          ),
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
+          ),
+        ),
         hintText: hintText,
         hintStyle: TextStyle(
-          color: Theme.of(context).hintColor.withOpacity(0.4),
+          color: Theme.of(context).hintColor.withValues(alpha: 0.4),
           fontSize: 11,
         ),
       ),
@@ -761,16 +921,20 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           ),
           const SizedBox(width: 16),
           ElevatedButton.icon(
-            onPressed: _lastDeletedRecord == null ? null : () {
+            onPressed: (_lastDeletedRecords == null || _lastDeletedRecords!.isEmpty) ? null : () {
               final restoredRecords = List<ShotRecord>.from(widget.project.log.records);
-              if (_lastDeletedIndex != null && _lastDeletedIndex! <= restoredRecords.length) {
-                restoredRecords.insert(_lastDeletedIndex!, _lastDeletedRecord!);
-              } else {
-                restoredRecords.add(_lastDeletedRecord!);
+              final itemsToRestore = List<({int index, ShotRecord record})>.from(_lastDeletedRecords!)
+                ..sort((a, b) => a.index.compareTo(b.index));
+
+              for (final item in itemsToRestore) {
+                if (item.index <= restoredRecords.length) {
+                  restoredRecords.insert(item.index, item.record);
+                } else {
+                  restoredRecords.add(item.record);
+                }
               }
               setState(() {
-                _lastDeletedRecord = null;
-                _lastDeletedIndex = null;
+                _lastDeletedRecords = null;
               });
               _updateRecords(restoredRecords);
             },

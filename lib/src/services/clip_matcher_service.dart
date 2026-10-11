@@ -29,6 +29,7 @@ class ClipMatcherService {
     required String targetCamera,
     String? reelOverride,
     List<Map<String, dynamic>> renameHistory = const [],
+    Map<String, String?> manualOverrides = const {},
   }) {
     List<RenameProposal> proposals = [];
     
@@ -118,6 +119,66 @@ class ClipMatcherService {
       }
       return false;
     });
+
+    // Process manual overrides (conflict resolution & explicit assignments)
+    for (var scanned in List<ScannedFile>.from(scannedFiles.where((f) => f.isVideo))) {
+      if (manualOverrides.containsKey(scanned.path)) {
+        videoFiles.removeWhere((v) => v.path == scanned.path);
+        final targetRecordId = manualOverrides[scanned.path];
+
+        if (targetRecordId == null) {
+          proposals.add(RenameProposal(
+            originalFilePath: scanned.path,
+            proposedFileName: scanned.basename,
+            status: ProposalStatus.unmatchedClip,
+          ));
+        } else {
+          final record = log.records.where((r) => r.id == targetRecordId).firstOrNull;
+          if (record != null) {
+            String proposedBase = ConventionNameGenerator.generate(
+              nomenclature: log.metadata.nomenclature,
+              date: log.metadata.date,
+              scene: record.scene,
+              plane: record.plane,
+              take: record.take,
+              reel: record.reel,
+              day: log.metadata.day,
+              unit: log.metadata.unit,
+              activeCamera: targetCamera,
+              reelOverride: reelOverride,
+            );
+            String ext = scanned.extension.toUpperCase();
+            proposals.add(RenameProposal(
+              originalFilePath: scanned.path,
+              proposedFileName: '$proposedBase$ext',
+              associatedRecord: record,
+              status: ProposalStatus.ready,
+            ));
+
+            var companion = _findCompanionXml(scanned, xmlFiles);
+            if (companion != null) {
+              String xmlExt = companion.extension.toUpperCase();
+              proposals.add(RenameProposal(
+                originalFilePath: companion.path,
+                proposedFileName: '$proposedBase$xmlExt',
+                associatedRecord: record,
+                status: ProposalStatus.ready,
+                isCompanionFile: true,
+              ));
+              xmlFiles.remove(companion);
+            }
+
+            expectedClips.removeWhere((clipName, r) => r.id == record.id);
+          } else {
+            proposals.add(RenameProposal(
+              originalFilePath: scanned.path,
+              proposedFileName: scanned.basename,
+              status: ProposalStatus.unmatchedClip,
+            ));
+          }
+        }
+      }
+    }
 
     Map<String, List<ScannedFile>> filesByClip = {};
     for (var video in videoFiles) {

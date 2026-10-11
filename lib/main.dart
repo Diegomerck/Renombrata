@@ -11,7 +11,7 @@ void main() async {
 
   const WindowOptions windowOptions = WindowOptions(
     size: Size(1280, 820),          // Default launch size
-    minimumSize: Size(1000, 720),   // Hard minimum limit: prevents UI breakage
+    minimumSize: Size(1100, 720),   // Hard minimum limit: prevents UI breakage
     center: true,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
@@ -19,6 +19,7 @@ void main() async {
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.setMinimumSize(const Size(1100, 720));
     await windowManager.show();
     await windowManager.focus();
   });
@@ -34,18 +35,33 @@ void main() async {
 }
 
 class RenombrataApp extends StatelessWidget {
-  const RenombrataApp({Key? key}) : super(key: key);
+  const RenombrataApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: themeNotifier,
-      builder: (_, ThemeMode currentMode, __) {
+      builder: (context, currentMode, child) {
         return MaterialApp(
           title: 'Renombrata',
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.light),
+            scaffoldBackgroundColor: const Color(0xFFE9EDF4),
+            cardColor: const Color(0xFFF7F8FA),
+            inputDecorationTheme: const InputDecorationTheme(
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFFBCC4D2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFFBCC4D2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderSide: BorderSide(color: Colors.deepPurple, width: 1.5),
+              ),
+            ),
             useMaterial3: true,
           ),
           darkTheme: ThemeData(
