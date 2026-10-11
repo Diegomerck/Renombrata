@@ -23,6 +23,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   bool _isHeaderExpanded = true;
   ShotRecord? _lastDeletedRecord;
   int? _lastDeletedIndex;
+  final Set<String> _expandedRecordIds = {};
 
   @override
   void didUpdateWidget(BitacoraEditorTab oldWidget) {
@@ -31,6 +32,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         oldWidget.project.log.metadata.date != widget.project.log.metadata.date) {
       _lastDeletedRecord = null;
       _lastDeletedIndex = null;
+      _expandedRecordIds.clear();
     }
   }
 
@@ -225,15 +227,20 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   }
 
   void _addNewRecord() {
-    final newRecords = List<ShotRecord>.from(widget.project.log.records);
-    newRecords.add(ShotRecord(
+    final newRecord = ShotRecord(
       chapter: '',
       scene: '',
       plane: '',
       take: '',
       cameras: [],
       reel: widget.project.defaultReel,
-    ));
+    );
+    final newRecords = List<ShotRecord>.from(widget.project.log.records);
+    newRecords.add(newRecord);
+    setState(() {
+      _expandedRecordIds.clear();
+      _expandedRecordIds.add(newRecord.id);
+    });
     _updateRecords(newRecords);
   }
 
@@ -244,25 +251,29 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       return Card(
         margin: const EdgeInsets.symmetric(horizontal: 16),
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.movie_filter_outlined, size: 64, color: Theme.of(context).colorScheme.primary.withOpacity(0.5)),
-              const SizedBox(height: 16),
-              const Text('No hay tomas en esta bitácora', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Text(
-                'Puedes importar una bitácora (.xlsx) o agregar una nueva toma manualmente para comenzar.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                icon: const Icon(Icons.add),
-                label: const Text('Agregar Primera Toma'),
-                onPressed: _addNewRecord,
-              ),
-            ],
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.movie_filter_outlined, size: 48, color: Theme.of(context).colorScheme.primary.withOpacity(0.5)),
+                const SizedBox(height: 12),
+                const Text('No hay tomas en esta bitácora', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Text(
+                  'Puedes importar una bitácora (.xlsx) o agregar una nueva toma manualmente para comenzar.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Agregar Primera Toma'),
+                  onPressed: () {
+                    _addNewRecord();
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -301,58 +312,64 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   Widget _buildGridHeader() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final records = widget.project.log.records;
+    final allExpanded = records.isNotEmpty && _expandedRecordIds.length == records.length;
     
     return Container(
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF282832) : Colors.grey.shade200,
         border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : Colors.grey.shade300)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      child: Column(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
         children: [
-          Row(
-            children: [
-              const SizedBox(width: 20),
-              const SizedBox(width: 20, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 220, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              const SizedBox(width: 60, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              const SizedBox(width: 55, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              for (var cam in widget.project.cameraNames)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8.0),
-                  child: SizedBox(
-                    width: 85, 
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Clip Cam', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 11)),
-                        Text('"$cam"', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                      ],
-                    )
-                  ),
+          const SizedBox(width: 20),
+          const SizedBox(width: 32, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          const SizedBox(width: 180, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          const SizedBox(width: 55, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          const SizedBox(width: 50, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          for (var cam in widget.project.cameraNames)
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: SizedBox(
+                width: 80, 
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Clip Cam', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 10)),
+                    Text('"$cam"', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13), overflow: TextOverflow.ellipsis),
+                  ],
                 ),
-              const SizedBox(width: 80, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 48), // Action column
-            ],
+              ),
+            ),
+          const SizedBox(width: 75, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          const SizedBox(width: 110, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(width: 8),
+          const SizedBox(width: 110, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+          const Spacer(),
+          SizedBox(
+            width: 40,
+            child: IconButton(
+              icon: Icon(allExpanded ? Icons.unfold_less : Icons.unfold_more),
+              tooltip: 'Expandir / Colapsar todas las notas',
+              onPressed: () {
+                setState(() {
+                  if (allExpanded) {
+                    _expandedRecordIds.clear();
+                  } else {
+                    _expandedRecordIds.addAll(records.map((r) => r.id));
+                  }
+                });
+              },
+            ),
           ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const SizedBox(width: 40),
-              const SizedBox(width: 130, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              const SizedBox(width: 130, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              const SizedBox(width: 60, child: Text('MOS', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-              const Expanded(child: Text('Observaciones', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 48), // Action column
-            ],
-          ),
+          const SizedBox(width: 40),
         ],
       ),
     );
@@ -387,13 +404,43 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     }
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isEven = index % 2 == 0;
+    final isExpanded = _expandedRecordIds.contains(record.id);
+
+    final cardColor = isDark
+        ? (isEven ? const Color(0xFF16161B) : const Color(0xFF2C2C36))
+        : (isEven ? Colors.white : const Color(0xFFE8EBF0));
+
+    final cardBorderColor = isDark
+        ? (isEven ? const Color(0xFF282832) : const Color(0xFF424250))
+        : (isEven ? Colors.grey.shade300 : const Color(0xFFCBD0D8));
+
+    final tier2Color = isDark
+        ? (isEven ? const Color(0xFF101014) : const Color(0xFF22222A))
+        : (isEven ? const Color(0xFFF8F9FA) : const Color(0xFFDFE2E8));
+
+    final tier2BorderColor = isDark
+        ? (isEven ? const Color(0xFF1F1F26) : const Color(0xFF383844))
+        : (isEven ? Colors.grey.shade200 : const Color(0xFFCBD0D8));
 
     return Container(
       key: ValueKey(record.id),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF2E2E38) : Colors.grey.shade300)),
+        color: cardColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: cardBorderColor,
+          width: 1,
+        ),
+        boxShadow: isDark ? [] : [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         children: [
@@ -403,21 +450,82 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 index: index,
                 child: const SizedBox(width: 20, child: MouseRegion(cursor: SystemMouseCursors.grab, child: Icon(Icons.drag_indicator, color: Colors.grey))),
               ),
-              SizedBox(width: 20, child: Text('${index + 1}')),
-              SizedBox(width: 220, child: _buildGridCell(record.scene, (v) => updateRecord(record.copyWith(scene: v)), hintText: 'Escena')),
+              SizedBox(
+                width: 32,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Center(
+                    child: Text(
+                      '#${index + 1}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               const SizedBox(width: 8),
-              SizedBox(width: 60, child: _buildGridCell(record.plane ?? '', (v) => updateRecord(record.copyWith(plane: v)), hintText: 'Plano')),
+              SizedBox(width: 180, child: _buildGridCell(record.scene, (v) => updateRecord(record.copyWith(scene: v)), hintText: 'Escena')),
               const SizedBox(width: 8),
-              SizedBox(width: 55, child: _buildGridCell(record.take, (v) => updateRecord(record.copyWith(take: v)), hintText: 'Toma')),
+              SizedBox(width: 55, child: _buildGridCell(record.plane ?? '', (v) => updateRecord(record.copyWith(plane: v)), hintText: 'Plano')),
+              const SizedBox(width: 8),
+              SizedBox(width: 50, child: _buildGridCell(record.take, (v) => updateRecord(record.copyWith(take: v)), hintText: 'Toma')),
               const SizedBox(width: 8),
               for (var cam in widget.project.cameraNames)
                 Padding(
                   padding: const EdgeInsets.only(right: 8.0),
-                  child: SizedBox(width: 85, child: _buildGridCell(getClipForCam(cam), (v) => updateCam(cam, v), hintText: 'Clip $cam')),
+                  child: SizedBox(width: 80, child: _buildGridCell(getClipForCam(cam), (v) => updateCam(cam, v), hintText: 'Clip $cam')),
                 ),
-              SizedBox(width: 80, child: _buildGridCell(record.reel, (v) => updateRecord(record.copyWith(reel: v)), hintText: 'Reel')),
+              SizedBox(width: 75, child: _buildGridCell(record.reel, (v) => updateRecord(record.copyWith(reel: v)), hintText: 'Reel')),
+              const SizedBox(width: 8),
               SizedBox(
-                width: 48,
+                width: 110, 
+                child: Focus(
+                  onFocusChange: (focused) {
+                    if (!focused && record.tcIn != null && record.tcIn!.isNotEmpty) {
+                      updateRecord(record.copyWith(tcIn: TimecodeUtils.normalize(record.tcIn!, widget.project.log.metadata.frameRate)));
+                    }
+                  },
+                  child: _buildGridCell(record.tcIn ?? '', (v) => updateRecord(record.copyWith(tcIn: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC In (00:00:00:00)'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 110, 
+                child: Focus(
+                  onFocusChange: (focused) {
+                    if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
+                      updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
+                    }
+                  },
+                  child: _buildGridCell(record.tcOut ?? '', (v) => updateRecord(record.copyWith(tcOut: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC Out (00:00:00:00)'),
+                ),
+              ),
+              const Spacer(),
+              SizedBox(
+                width: 40,
+                child: IconButton(
+                  icon: Icon(isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down),
+                  tooltip: isExpanded ? 'Colapsar notas' : 'Expandir notas',
+                  onPressed: () {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedRecordIds.remove(record.id);
+                      } else {
+                        _expandedRecordIds.add(record.id);
+                      }
+                    });
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 40,
                 child: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.red),
                   onPressed: () async {
@@ -443,6 +551,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                       setState(() {
                         _lastDeletedRecord = record;
                         _lastDeletedIndex = index;
+                        _expandedRecordIds.remove(record.id);
                       });
                       final newRecords = List<ShotRecord>.from(widget.project.log.records);
                       newRecords.removeAt(index);
@@ -453,47 +562,41 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const SizedBox(width: 40),
-              SizedBox(
-                width: 130, 
-                child: Focus(
-                  onFocusChange: (focused) {
-                    if (!focused && record.tcIn != null && record.tcIn!.isNotEmpty) {
-                      updateRecord(record.copyWith(tcIn: TimecodeUtils.normalize(record.tcIn!, widget.project.log.metadata.frameRate)));
-                    }
-                  },
-                  child: _buildGridCell(record.tcIn ?? '', (v) => updateRecord(record.copyWith(tcIn: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC In (00:00:00:00)')
-                )
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 130, 
-                child: Focus(
-                  onFocusChange: (focused) {
-                    if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
-                      updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
-                    }
-                  },
-                  child: _buildGridCell(record.tcOut ?? '', (v) => updateRecord(record.copyWith(tcOut: v)), formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], hintText: 'TC Out (00:00:00:00)')
-                )
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 60,
-                child: Checkbox(
-                  value: record.isMos,
-                  onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
-                  visualDensity: VisualDensity.compact,
+          if (isExpanded)
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: tier2Color,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: tier2BorderColor,
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(child: _buildGridCell(record.observations ?? '', (v) => updateRecord(record.copyWith(observations: v)), hintText: 'Observaciones / Notas del director')),
-              const SizedBox(width: 48),
-            ],
-          ),
+              child: Row(
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Checkbox(
+                        value: record.isMos,
+                        onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      const Text('MOS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    ],
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildGridCell(
+                      record.observations ?? '',
+                      (v) => updateRecord(record.copyWith(observations: v)),
+                      hintText: 'Observaciones / Notas del director',
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -642,6 +745,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               );
               final newRecords = List<ShotRecord>.from(records);
               newRecords.add(duplicated);
+              setState(() {
+                _expandedRecordIds.clear();
+                _expandedRecordIds.add(duplicated.id);
+              });
               _updateRecords(newRecords);
             },
             icon: const Icon(Icons.copy),

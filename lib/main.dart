@@ -11,7 +11,7 @@ void main() async {
 
   const WindowOptions windowOptions = WindowOptions(
     size: Size(1280, 820),          // Default launch size
-    minimumSize: Size(1000, 680),   // Hard minimum limit: prevents UI breakage
+    minimumSize: Size(1000, 720),   // Hard minimum limit: prevents UI breakage
     center: true,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
