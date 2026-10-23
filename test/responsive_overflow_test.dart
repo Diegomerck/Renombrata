@@ -247,4 +247,68 @@ void main() {
     expect(find.text('Renombrar archivos'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('HomeScreen displays TC Coincide and TC Diferente badges correctly', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final report = DryRunReport(
+      proposals: [
+        RenameProposal(
+          originalFilePath: '/media/A001C001.mov',
+          proposedFileName: 'PROJECT_101026_U1_D1_E101_T1_A.mov',
+          status: ProposalStatus.ready,
+          fileTcIn: '10:00:00:00',
+          fileTcOut: '10:01:00:00',
+          associatedRecord: ShotRecord(
+            id: 'r1',
+            chapter: '1',
+            scene: '101',
+            plane: '1',
+            take: '1',
+            tcIn: '10:00:00:00',
+            cameras: [],
+            reel: 'A001',
+          ),
+        ),
+        RenameProposal(
+          originalFilePath: '/media/A001C002.mov',
+          proposedFileName: 'PROJECT_101026_U1_D1_E101_T2_A.mov',
+          status: ProposalStatus.ready,
+          fileTcIn: '10:00:00:00',
+          fileTcOut: '10:01:00:00',
+          associatedRecord: ShotRecord(
+            id: 'r2',
+            chapter: '1',
+            scene: '101',
+            plane: '1',
+            take: '2',
+            tcIn: '15:30:00:00', // Different timecode
+            cameras: [],
+            reel: 'A001',
+          ),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(initialReport: report),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.pumpAndSettle();
+
+    // Verify green TC Coincide badge is present for r1
+    expect(find.text('TC Coincide'), findsOneWidget);
+
+    // Verify amber TC Diferente badge is present for r2
+    expect(find.text('TC Diferente'), findsOneWidget);
+    expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

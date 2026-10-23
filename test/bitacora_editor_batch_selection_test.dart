@@ -190,7 +190,7 @@ void main() {
     // Verify TextField in grid cell has white fillColor
     final textFields = tester.widgetList<TextField>(find.byType(TextField));
     expect(textFields.isNotEmpty, isTrue);
-    final gridCellField = textFields.firstWhere((t) => t.decoration?.hintText == 'Escena');
+    final gridCellField = textFields.firstWhere((t) => t.decoration?.hintText == 'Toma');
     expect(gridCellField.decoration?.filled, isTrue);
     expect(gridCellField.decoration?.fillColor, Colors.white);
   });

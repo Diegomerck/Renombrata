@@ -320,5 +320,89 @@ void main() {
       expect(returnedOverrides!.containsKey('/media/A001C005_AAA.MOV'), isFalse);
       expect(returnedOverrides!.containsKey('/media/A001C005_BBB.MOV'), isFalse);
     });
+
+    testWidgets('displays TC discrepancy warning badge and allows confirming candidate', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final record1 = ShotRecord(
+        id: 'rec_take_1',
+        chapter: '1',
+        scene: '10',
+        plane: '1',
+        take: '1',
+        cameras: [CameraTakeRecord(cameraName: 'A', clipName: '001')],
+        reel: 'A007',
+        tcIn: '10:00:00:00',
+      );
+
+      final log = ShootingLog(
+        metadata: ShootingLogMetadata.empty(),
+        records: [record1],
+      );
+
+      final report = DryRunReport(proposals: [
+        RenameProposal(
+          originalFilePath: '/media/C0001.MP4',
+          proposedFileName: 'PROD_10_1_1_A007_D1.MP4',
+          associatedRecord: record1,
+          status: ProposalStatus.conflict,
+          fileTcIn: '09:04:22:00',
+          fileTcOut: '09:05:22:00',
+        ),
+      ]);
+
+      Map<String, String?>? returnedOverrides;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () async {
+                    returnedOverrides = await showDialog<Map<String, String?>>(
+                      context: context,
+                      builder: (ctx) => ConflictResolverDialog(
+                        report: report,
+                        log: log,
+                      ),
+                    );
+                  },
+                  child: const Text('Open Dialog'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Dialog'));
+      await tester.pumpAndSettle();
+
+      // Verify TC In -> Out is rendered
+      expect(find.textContaining('TC: 09:04:22:00 → 09:05:22:00'), findsOneWidget);
+
+      // Verify TC Discrepancy warning badge is rendered
+      expect(
+        find.text('⚠ TC Discrepante: Bitácora (10:00:00:00) vs Archivo (09:04:22:00)'),
+        findsOneWidget,
+      );
+
+      // Tap radio button to confirm candidate as target take
+      final radio = find.byType(Radio<String>);
+      expect(radio, findsOneWidget);
+      await tester.tap(radio);
+      await tester.pumpAndSettle();
+
+      // Click "Guardar cambios"
+      await tester.tap(find.text('Guardar cambios'));
+      await tester.pumpAndSettle();
+
+      expect(returnedOverrides, isNotNull);
+      expect(returnedOverrides!['/media/C0001.MP4'], 'rec_take_1');
+    });
   });
 }

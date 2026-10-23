@@ -53,15 +53,16 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
         .where((r) => seenIds.add(r.id))
         .toList();
 
-    // Group all proposals that are in conflict
-    var conflictProposals = widget.report.proposals
-        .where((p) => p.status == ProposalStatus.conflict && !p.isCompanionFile && p.originalFilePath != null)
-        .toList();
-
-    if (conflictProposals.isEmpty && widget.currentOverrides.isNotEmpty) {
-      conflictProposals = widget.report.proposals
-          .where((p) => p.originalFilePath != null && widget.currentOverrides.containsKey(p.originalFilePath) && !p.isCompanionFile)
-          .toList();
+    // Group all proposals that are in conflict or currently overridden
+    final seenConflictPaths = <String>{};
+    final conflictProposals = <RenameProposal>[];
+    for (var pItem in widget.report.proposals) {
+      if (pItem.isCompanionFile || pItem.originalFilePath == null) continue;
+      if (pItem.status == ProposalStatus.conflict || widget.currentOverrides.containsKey(pItem.originalFilePath)) {
+        if (seenConflictPaths.add(pItem.originalFilePath!)) {
+          conflictProposals.add(pItem);
+        }
+      }
     }
 
     final Map<String, List<RenameProposal>> grouped = {};
@@ -109,10 +110,16 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
 
     // Set intelligent default resolutions if not already resolved:
     // First candidate becomes the winner for target take, secondary candidates are marked as omit
+    // (Only auto-resolve if there are multiple candidates and no timecode discrepancies)
     for (var group in _groups) {
       final hasAnyOverride = group.candidates.any((c) => _overrides.containsKey(c.originalFilePath));
       if (!hasAnyOverride && group.candidates.isNotEmpty) {
-        if (group.targetRecord != null) {
+        final hasTcConflict = group.candidates.any((c) {
+          final temp = c.copyWith(associatedRecord: group.targetRecord);
+          return temp.hasTimecodeDiscrepancy;
+        });
+
+        if (!hasTcConflict && group.targetRecord != null && group.candidates.length > 1) {
           _overrides[group.candidates.first.originalFilePath!] = group.targetRecord!.id;
           for (int i = 1; i < group.candidates.length; i++) {
             _overrides[group.candidates[i].originalFilePath!] = null;
@@ -329,7 +336,22 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
               children: group.candidates.map((candidate) {
                 final path = candidate.originalFilePath!;
                 final filename = p.basename(path);
-                final metadata = _getFileMetadata(path);
+                final fileMeta = _getFileMetadata(path);
+
+                final reelStr = 'Reel: ${candidate.fileReel ?? '—'}';
+                String tcInfo = '';
+                if (candidate.fileTcIn != null) {
+                  if (candidate.fileTcOut != null) {
+                    tcInfo = 'TC: ${candidate.fileTcIn} → ${candidate.fileTcOut}';
+                  } else {
+                    tcInfo = 'TC: ${candidate.fileTcIn}';
+                  }
+                }
+                final metadata = '$reelStr  ·  ${tcInfo.isNotEmpty ? '$tcInfo  ·  ' : ''}$fileMeta';
+
+                final tempProposal = candidate.copyWith(associatedRecord: record);
+                final hasTcDiscrepancy = tempProposal.hasTimecodeDiscrepancy;
+                final hasReelDiscrepancy = tempProposal.hasReelDiscrepancy;
 
                 final isAssigned = _overrides.containsKey(path);
                 final currentAssignment = _overrides[path];
@@ -380,8 +402,15 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                               orElse: () => RenameProposal(proposedFileName: '', status: ProposalStatus.conflict),
                             )
                             .originalFilePath,
+                        toggleable: true,
                         onChanged: (val) {
-                          if (val != null) _setWinner(group, val);
+                          if (val != null) {
+                            _setWinner(group, val);
+                          } else {
+                            setState(() {
+                              _overrides.remove(path);
+                            });
+                          }
                         },
                       ),
                       const SizedBox(width: 4),
@@ -413,6 +442,50 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
+                            if (hasReelDiscrepancy) ...[
+                              const SizedBox(height: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.withValues(alpha: isDark ? 0.2 : 0.15),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: Colors.amber.shade700,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  '⚠ Reel Discrepante: Bitácora (${record?.reel ?? "—"}) vs Archivo (${candidate.fileReel ?? "—"})',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark ? Colors.amber.shade300 : Colors.amber.shade900,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (hasTcDiscrepancy) ...[
+                              const SizedBox(height: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.withValues(alpha: isDark ? 0.2 : 0.15),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: Colors.amber.shade700,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  '⚠ TC Discrepante: Bitácora (${record?.tcIn ?? "—"}) vs Archivo (${candidate.fileTcIn ?? "—"})',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark ? Colors.amber.shade300 : Colors.amber.shade900,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -464,7 +537,9 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
             DropdownMenuItem(
               value: targetRecord.id,
               child: Text(
-                '✓ Ganador (Esc. ${targetRecord.scene} - T${targetRecord.take})',
+                group.candidates.length == 1
+                    ? '✓ Confirmar (Esc. ${targetRecord.scene} - T${targetRecord.take})'
+                    : '✓ Ganador (Esc. ${targetRecord.scene} - T${targetRecord.take})',
                 style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
                 overflow: TextOverflow.ellipsis,
               ),

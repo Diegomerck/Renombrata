@@ -8,6 +8,7 @@ class RenombrataProject {
   final String defaultReel;
   final String activeCamera;
   final List<String> cameraNames;
+  final bool autoSortByClip;
 
   RenombrataProject({
     this.version = "2.0",
@@ -16,6 +17,7 @@ class RenombrataProject {
     required this.defaultReel,
     required this.activeCamera,
     this.cameraNames = const ['A', 'B', 'C'],
+    this.autoSortByClip = true,
   }) : lastModified = lastModified ?? DateTime.now().toUtc().toIso8601String();
 
   RenombrataProject copyWith({
@@ -25,6 +27,7 @@ class RenombrataProject {
     String? defaultReel,
     String? activeCamera,
     List<String>? cameraNames,
+    bool? autoSortByClip,
   }) {
     return RenombrataProject(
       version: version ?? this.version,
@@ -33,6 +36,7 @@ class RenombrataProject {
       defaultReel: defaultReel ?? this.defaultReel,
       activeCamera: activeCamera ?? this.activeCamera,
       cameraNames: cameraNames ?? this.cameraNames,
+      autoSortByClip: autoSortByClip ?? this.autoSortByClip,
     );
   }
 
@@ -43,6 +47,7 @@ class RenombrataProject {
     'defaultReel': defaultReel,
     'activeCamera': activeCamera,
     'cameraNames': cameraNames,
+    'autoSortByClip': autoSortByClip,
     'records': log.records.map((r) => r.toJson()).toList(),
   };
 
@@ -56,9 +61,12 @@ class RenombrataProject {
             ?.map((e) => ShotRecord.fromJson(e as Map<String, dynamic>))
             .toList() ?? [],
       ),
-      defaultReel: json['defaultReel'] as String? ?? '',
+      defaultReel: (json['defaultReel'] as String? ?? '').isNotEmpty
+          ? json['defaultReel'] as String
+          : '001',
       activeCamera: json['activeCamera'] as String? ?? 'A',
       cameraNames: (json['cameraNames'] as List<dynamic>?)?.map((e) => e as String).toList() ?? ['A', 'B', 'C'],
+      autoSortByClip: json['autoSortByClip'] as bool? ?? true,
     );
   }
 }

@@ -150,6 +150,8 @@ class ShotRecord {
   final String? observations;
   final bool isMos;
 
+  String? get notes => observations;
+
   ShotRecord({
     String? id,
     required this.chapter,

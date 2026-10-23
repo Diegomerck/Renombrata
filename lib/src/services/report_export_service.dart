@@ -65,6 +65,7 @@ class ReportExportService {
       'ESTADO',
       'ARCHIVO ORIGINAL',
       'NOMBRE CONVENCIÓN',
+      'CAPÍTULO',
       'ESCENA',
       'PLANO',
       'TOMA',
@@ -86,6 +87,7 @@ class ReportExportService {
       String originalFile = proposal.originalFilePath != null ? p.basename(proposal.originalFilePath!) : '—';
       String conventionName = proposal.status == ProposalStatus.unmatchedClip ? '—' : proposal.proposedFileName;
       
+      String capitulo = proposal.associatedRecord?.chapter ?? '—';
       String escena = proposal.associatedRecord?.scene ?? '—';
       String plano = proposal.associatedRecord?.plane ?? '—';
       String toma = proposal.associatedRecord?.take ?? '—';
@@ -118,7 +120,7 @@ class ReportExportService {
       String obs = proposal.associatedRecord?.observations ?? '—';
 
       List<String> rowData = [
-        estado, originalFile, conventionName, escena, plano, toma,
+        estado, originalFile, conventionName, capitulo, escena, plano, toma,
         camara, clipNum, reel, tcIn, tcOut, mos, obs
       ];
 

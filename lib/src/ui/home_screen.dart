@@ -12,8 +12,12 @@ import 'package:renombrata/src/services/rename_service.dart';
 import 'package:renombrata/src/services/report_export_service.dart';
 import 'package:renombrata/src/services/project_service.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
+import 'package:renombrata/src/models/app_settings.dart';
+import 'package:renombrata/src/services/settings_service.dart';
+import 'package:renombrata/src/ui/settings_dialog.dart';
 import 'package:renombrata/src/ui/bitacora_editor_tab.dart';
 import 'package:renombrata/src/ui/conflict_resolver_dialog.dart';
+import 'package:renombrata/src/ui/media_preview_dialog.dart';
 import 'package:path/path.dart' as p;
 import 'package:desktop_drop/desktop_drop.dart';
 import '../../main.dart';
@@ -35,9 +39,15 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   RenombrataProject _project = RenombrataProject(
     log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
-    defaultReel: 'A001',
+    defaultReel: '001',
     activeCamera: 'A',
   );
+
+  AppSettings _appSettings = AppSettings.defaults();
+
+  @visibleForTesting
+  RenombrataProject get project => _project;
+
   String? _projectPath;
   bool _isDirty = false;
   
@@ -55,7 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isNotificationError = false;
   Timer? _notificationTimer;
 
-  final TextEditingController _reelController = TextEditingController();
+  final TextEditingController _reelController = TextEditingController(text: '001');
   final ScrollController _horizontalTableScrollController = ScrollController();
 
   @override
@@ -68,6 +78,27 @@ class _HomeScreenState extends State<HomeScreen> {
       _report = widget.initialReport;
     }
     _reelController.text = _project.defaultReel;
+    SettingsService.loadSettings().then((s) {
+      if (mounted) {
+        setState(() {
+          _appSettings = s;
+        });
+      }
+    });
+  }
+
+  void _openSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => SettingsDialog(
+        currentSettings: _appSettings,
+        onSettingsChanged: (newSettings) {
+          setState(() {
+            _appSettings = newSettings;
+          });
+        },
+      ),
+    );
   }
 
   @override
@@ -141,7 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _project = RenombrataProject(
         log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
-        defaultReel: 'A001',
+        defaultReel: '001',
         activeCamera: 'A',
       );
       _projectPath = null;
@@ -321,11 +352,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _generatePreview({Map<String, String?>? manualOverrides}) async {
     if (_mediaFolderPath == null) {
-      setState(() {
-        _report = null;
-        _baseReport = null;
-        _renameHistory = [];
-      });
+      if (_report == null) {
+        setState(() {
+          _baseReport = null;
+          _renameHistory = [];
+        });
+      }
       return;
     }
 
@@ -344,7 +376,7 @@ class _HomeScreenState extends State<HomeScreen> {
         searchSubdirectories: true,
       );
 
-      final baseReport = ClipMatcherService.matchFiles(
+      final baseReport = await ClipMatcherService.matchFilesAsync(
         scannedFiles: scannedFiles,
         log: _project.log,
         targetCamera: _project.activeCamera,
@@ -355,7 +387,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final report = _manualOverrides.isEmpty
           ? baseReport
-          : ClipMatcherService.matchFiles(
+          : await ClipMatcherService.matchFilesAsync(
               scannedFiles: scannedFiles,
               log: _project.log,
               targetCamera: _project.activeCamera,
@@ -471,6 +503,110 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  bool _isPlayableVideo(String? filePath) {
+    if (filePath == null) return false;
+    final ext = p.extension(filePath).toLowerCase();
+    return ['.mp4', '.mov', '.mxf'].contains(ext);
+  }
+
+  void _openMediaPreview(RenameProposal proposal) {
+    if (_report == null) return;
+    final playlist = _report!.proposals
+        .where((p) => p.originalFilePath != null && _isPlayableVideo(p.originalFilePath))
+        .toList();
+    if (playlist.isEmpty) return;
+
+    final initialIndex = playlist.indexOf(proposal);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => MediaPreviewDialog(
+        playlist: playlist,
+        initialIndex: initialIndex >= 0 ? initialIndex : 0,
+        projectMetadata: _project.log.metadata,
+        activeCamera: _project.activeCamera,
+        reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
+        autoSortByClip: _project.autoSortByClip,
+        onAutoSortChanged: (val) {
+          setState(() {
+            _project = _project.copyWith(autoSortByClip: val);
+            _isDirty = true;
+          });
+        },
+        onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {
+          final clipNum = ClipMatcherService.extractClipNumber(prop.originalFilePath ?? '');
+          final fileReel = prop.fileReel ?? ClipMatcherService.extractReel(prop.originalFilePath ?? '');
+          final targetReel = _reelController.text.trim().isNotEmpty
+              ? _reelController.text.trim()
+              : (fileReel ?? _project.defaultReel);
+
+          final records = List<ShotRecord>.from(_project.log.records);
+          final existingIdx = records.indexWhere((r) =>
+              (chapter.isEmpty || r.chapter.trim() == chapter.trim()) &&
+              r.scene.trim() == scene.trim() &&
+              (r.plane ?? '').trim() == plane.trim() &&
+              r.take.trim() == take.trim());
+
+          if (existingIdx != -1) {
+            final existing = records[existingIdx];
+            final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
+            final camIdx = updatedCameras.indexWhere((c) => c.cameraName == _project.activeCamera);
+            if (camIdx != -1) {
+              updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(clipName: clipNum);
+            } else {
+              updatedCameras.add(CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum));
+            }
+
+            records[existingIdx] = existing.copyWith(
+              chapter: chapter.isNotEmpty ? chapter : existing.chapter,
+              cameras: updatedCameras,
+              reel: targetReel.isNotEmpty ? targetReel : existing.reel,
+              tcIn: prop.fileTcIn ?? existing.tcIn,
+              tcOut: prop.fileTcOut ?? existing.tcOut,
+              observations: notes.isNotEmpty ? notes : existing.observations,
+              isMos: isMos,
+            );
+          } else {
+            final newRecord = ShotRecord(
+              chapter: chapter,
+              scene: scene,
+              plane: plane.isNotEmpty ? plane : null,
+              take: take,
+              cameras: [
+                CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum),
+              ],
+              reel: targetReel,
+              tcIn: prop.fileTcIn,
+              tcOut: prop.fileTcOut,
+              observations: notes.isNotEmpty ? notes : null,
+              isMos: isMos,
+            );
+            records.add(newRecord);
+          }
+
+          final List<ShotRecord> finalRecords;
+          if (_project.autoSortByClip) {
+            finalRecords = BitacoraEditorTab.sortRecordsByClip(records, _project.activeCamera);
+          } else {
+            finalRecords = records;
+          }
+
+          setState(() {
+            _project = _project.copyWith(
+              log: ShootingLog(
+                metadata: _project.log.metadata,
+                records: finalRecords,
+              ),
+            );
+            _isDirty = true;
+          });
+
+          await _generatePreview();
+        },
+      ),
+    );
+  }
+
   Future<void> _undoRename() async {
     if (_mediaFolderPath == null) return;
     
@@ -573,6 +709,11 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
             IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'Configuración',
+              onPressed: _openSettingsDialog,
+            ),
+            IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Actualizar Medios y Bitácora',
               onPressed: () {
@@ -627,6 +768,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         // Tab 1: Editor
                         BitacoraEditorTab(
                           project: _project,
+                          settings: _appSettings,
                           onProjectChanged: _updateProject,
                         ),
                         // Tab 2: Conciliación
@@ -659,6 +801,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildControlsBar() {
+    final playablePlaylist = _report?.proposals
+            .where((p) => p.originalFilePath != null && _isPlayableVideo(p.originalFilePath))
+            .toList() ??
+        [];
+
     return Card(
       elevation: 2,
       child: Padding(
@@ -725,6 +872,12 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.folder),
               label: const Text('Selector de Carpeta de Medios'),
             ),
+            if (playablePlaylist.isNotEmpty)
+              OutlinedButton.icon(
+                icon: const Icon(Icons.movie_filter),
+                label: Text('Inspeccionar Lote (${playablePlaylist.length})'),
+                onPressed: () => _openMediaPreview(playablePlaylist.first),
+              ),
             if (_mediaFolderPath != null)
               Chip(
                 avatar: const Icon(Icons.check_circle, size: 16, color: Colors.green),
@@ -918,6 +1071,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     headingTextStyle: const TextStyle(fontWeight: FontWeight.bold),
                     columns: const [
                       DataColumn(label: Text('Archivo Original')),
+                      DataColumn(label: Text('TC Archivo (In → Out)')),
                       DataColumn(label: Text('Nombre Propuesto')),
                       DataColumn(label: Text('Escena / Toma')),
                       DataColumn(label: Text('Estado')),
@@ -934,10 +1088,147 @@ class _HomeScreenState extends State<HomeScreen> {
                         sceneTake = 'Esc. ${p.associatedRecord!.scene} - $displayTake';
                       }
 
+                      final logTc = p.associatedRecord?.tcIn;
+                      final fileTc = p.fileTcIn;
+                      final hasLogTc = logTc != null && logTc.trim().isNotEmpty;
+                      final hasFileTc = fileTc != null && fileTc.trim().isNotEmpty;
+                      final isMatched = p.isTimecodeMatched;
+
+                      final isPlayable = _isPlayableVideo(p.originalFilePath);
+
                       return DataRow(cells: [
-                        DataCell(Text(original)),
+                        // 1. Archivo Original (clean single line with preview button if video)
+                        DataCell(
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (isPlayable) ...[
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () => _openMediaPreview(p),
+                                  child: Tooltip(
+                                    message: 'Reproducir e inspeccionar video',
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(right: 6.0),
+                                      child: Icon(
+                                        Icons.play_circle_outline,
+                                        size: 16,
+                                        color: Theme.of(context).colorScheme.primary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              Text(original),
+                            ],
+                          ),
+                          onDoubleTap: isPlayable ? () => _openMediaPreview(p) : null,
+                        ),
+
+                        // 2. TC Archivo (In → Out)
+                        DataCell(
+                          p.fileTcIn != null
+                              ? Text(
+                                  p.fileTcOut != null 
+                                      ? '${p.fileTcIn} → ${p.fileTcOut}'
+                                      : p.fileTcIn!,
+                                  style: TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 11,
+                                    color: Theme.of(context).colorScheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                )
+                              : Text('—', style: TextStyle(color: Theme.of(context).hintColor)),
+                        ),
+
+                        // 3. Nombre Propuesto
                         DataCell(Text(proposed)),
-                        DataCell(Text(sceneTake)),
+
+                        // 4. Escena / Toma (with TC Coincide or TC Diferente badge)
+                        DataCell(
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(sceneTake),
+                              if (p.hasReelDiscrepancy) ...[
+                                const SizedBox(width: 8),
+                                Tooltip(
+                                  message: 'El reel del archivo (${p.fileReel ?? "—"}) no coincide con el registrado en bitácora (${p.associatedRecord?.reel ?? "—"})',
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: Colors.amber),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'Reel: ${p.associatedRecord?.reel ?? '—'} ≠ ${p.fileReel}',
+                                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (isMatched) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(color: Colors.green),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        p.timecodeDeltaSeconds != null && p.timecodeDeltaSeconds! > 0
+                                            ? 'TC Coincide (±${p.timecodeDeltaSeconds}s)'
+                                            : 'TC Coincide',
+                                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ] else if (hasLogTc && hasFileTc && !isMatched) ...[
+                                const SizedBox(width: 8),
+                                Tooltip(
+                                  message: 'El timecode del archivo ($fileTc) no coincide con el registrado en bitácora ($logTc)',
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: Colors.amber),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'TC Diferente',
+                                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+
+                        // 5. Estado
                         DataCell(
                           p.status == ProposalStatus.conflict
                               ? Tooltip(

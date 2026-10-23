@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20">
+  <LtcChangeTable tcFps="24">
+    <LtcChange frameCount="0" value="10000000" status="increment" />
+  </LtcChangeTable>
+  <Duration value="1440" />
+</NonRealTimeMeta>

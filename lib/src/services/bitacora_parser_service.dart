@@ -1,11 +1,66 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:archive/archive.dart';
 import 'package:excel/excel.dart';
 import '../models/shooting_log.dart';
 
 class BitacoraParserService {
+  /// Fixes common Excel package incompatibilities with Apple Numbers and Televisa exports:
+  /// 1. Strips leading slash from Target paths in xl/_rels/workbook.xml.rels
+  /// 2. Strips t="inlineStr" from empty or self-closing <c> nodes that lack <is><t>
+  static List<int> sanitizeExcelBytes(List<int> rawBytes) {
+    try {
+      var archive = ZipDecoder().decodeBytes(rawBytes);
+      bool modified = false;
+      var newArchive = Archive();
+
+      for (var file in archive.files) {
+        if (file.name == 'xl/_rels/workbook.xml.rels') {
+          var content = utf8.decode(file.content as List<int>, allowMalformed: true);
+          if (content.contains('Target="/xl/') || content.contains('Target="xl/')) {
+            var fixed = content
+                .replaceAll('Target="/xl/', 'Target="')
+                .replaceAll('Target="xl/', 'Target="');
+            newArchive.addFile(ArchiveFile(file.name, utf8.encode(fixed).length, utf8.encode(fixed)));
+            modified = true;
+            continue;
+          }
+        } else if (file.name.startsWith('xl/worksheets/sheet') && file.name.endsWith('.xml')) {
+          var content = utf8.decode(file.content as List<int>, allowMalformed: true);
+          if (content.contains('t="inlineStr"')) {
+            var fixed = content.replaceAllMapped(
+              RegExp(r'<c\s+([^>]*?)t="inlineStr"([^>]*?)(/>)'),
+              (match) => '<c ${match.group(1)}${match.group(2)}/>',
+            );
+            fixed = fixed.replaceAllMapped(
+              RegExp(r'<c\s+([^>]*?)t="inlineStr"([^>]*?)><is\s*(/|><t\s*/>)?></is></c>'),
+              (match) => '<c ${match.group(1)}${match.group(2)}/>',
+            );
+            if (fixed != content) {
+              newArchive.addFile(ArchiveFile(file.name, utf8.encode(fixed).length, utf8.encode(fixed)));
+              modified = true;
+              continue;
+            }
+          }
+        }
+        newArchive.addFile(file);
+      }
+
+      if (modified) {
+        return ZipEncoder().encode(newArchive)!;
+      }
+    } catch (_) {}
+    return rawBytes;
+  }
+
   static ShootingLog parse(File file) {
     var bytes = file.readAsBytesSync();
-    var excel = Excel.decodeBytes(bytes);
+    return parseBytes(bytes);
+  }
+
+  static ShootingLog parseBytes(List<int> bytes) {
+    var fixedBytes = sanitizeExcelBytes(bytes);
+    var excel = Excel.decodeBytes(fixedBytes);
     return parseExcel(excel);
   }
 
@@ -20,71 +75,283 @@ class BitacoraParserService {
       return val.toString().trim();
     }
 
-    // Extract Metadata
+    // 1. Search the first 12 rows for the header row containing 'CAP', 'ESCE', 'PLAN', 'TOMA', or 'CAM A'
+    int headerRowIndex = -1;
+    for (int r = 0; r < sheet.maxRows && r < 12; r++) {
+      bool hasCapOrScene = false;
+      bool hasTakeOrCam = false;
+      for (int c = 0; c < sheet.maxColumns; c++) {
+        final val = getCellString(c, r).toUpperCase();
+        if (val.contains('CAP') || val.contains('ESCE') || val.contains('PLAN') || val.contains('SCENE')) {
+          hasCapOrScene = true;
+        }
+        if (val.contains('TOMA') || val.contains('CAM A') || val.contains('TAKE')) {
+          hasTakeOrCam = true;
+        }
+      }
+      if (hasCapOrScene && hasTakeOrCam) {
+        headerRowIndex = r;
+        break;
+      }
+    }
+
+    if (headerRowIndex == -1) {
+      for (int r = 0; r < sheet.maxRows && r < 12; r++) {
+        for (int c = 0; c < sheet.maxColumns; c++) {
+          final val = getCellString(c, r).toUpperCase();
+          if (val.contains('CAP') ||
+              val.contains('ESCE') ||
+              val.contains('PLAN') ||
+              val.contains('TOMA') ||
+              val.contains('CAM A')) {
+            headerRowIndex = r;
+            break;
+          }
+        }
+        if (headerRowIndex != -1) break;
+      }
+    }
+
+    if (headerRowIndex == -1) headerRowIndex = 6; // Default to Row 7 (index 6)
+
+    int colCap = -1;
+    int colScene = -1;
+    int colPlane = -1;
+    int colTake = -1;
+    int colReel = -1;
+    int colTcIn = -1;
+    int colTcOut = -1;
+    int colObs = -1;
+    String? headerReel;
+    Map<String, int> camCols = {};
+
+    for (int c = 0; c < sheet.maxColumns; c++) {
+      final h = getCellString(c, headerRowIndex).toUpperCase().trim();
+      if (h.isEmpty) continue;
+
+      if (h.contains('CAP')) {
+        colCap = c;
+      } else if (h.contains('ESCE') || h == 'SCENE') {
+        colScene = c;
+      } else if (h.contains('PLAN')) {
+        colPlane = c;
+      } else if (h.contains('TOMA') || h == 'TAKE') {
+        colTake = c;
+      } else if (h.contains('TC IN') || h == 'IN') {
+        colTcIn = c;
+      } else if (h.contains('TC OUT') || h == 'OUT') {
+        colTcOut = c;
+      } else if (h.contains('OBS') || h.contains('NOTAS') || h.contains('NOTES')) {
+        colObs = c;
+      } else if (h.contains('REEL') || h.contains('ROLLO')) {
+        colReel = c;
+        final rMatch = RegExp(r'(?:REEL|ROLLO)\s+(\d+)').firstMatch(h);
+        if (rMatch != null) {
+          headerReel ??= rMatch.group(1);
+        }
+      }
+
+      final camMatch = RegExp(r'CAM(?:ARA)?\s*([A-Za-z])(?:\s+(\d+))?').firstMatch(h);
+      if (camMatch != null) {
+        final camName = camMatch.group(1)!;
+        camCols[camName] = c;
+        final rNum = camMatch.group(2);
+        if (rNum != null) {
+          headerReel ??= rNum;
+        }
+      }
+    }
+
+    if (colCap == -1) colCap = 0;
+    if (colScene == -1) colScene = 1;
+    if (colPlane == -1) colPlane = 2;
+    if (colTake == -1) colTake = 3;
+    if (camCols.isEmpty) {
+      camCols = {'A': 4, 'B': 5, 'C': 6};
+    }
+    if (colReel == -1) colReel = 7;
+    if (colTcIn == -1) colTcIn = 8;
+    if (colTcOut == -1) colTcOut = 9;
+    if (colObs == -1) colObs = 10;
+
+    String normalizeKey(String s) {
+      return s
+          .toUpperCase()
+          .replaceAll('Á', 'A')
+          .replaceAll('É', 'E')
+          .replaceAll('Í', 'I')
+          .replaceAll('Ó', 'O')
+          .replaceAll('Ú', 'U')
+          .replaceAll(':', '')
+          .trim();
+    }
+
+    String findMetadata(List<String> keywords, {String fallback = ''}) {
+      final normKeywords = keywords.map(normalizeKey).toList();
+      bool labelFound = false;
+
+      for (int r = 0; r < headerRowIndex; r++) {
+        for (int c = 0; c < sheet.maxColumns; c++) {
+          final rawCell = getCellString(c, r);
+          if (rawCell.isEmpty) continue;
+          final cellNorm = normalizeKey(rawCell);
+          for (var kw in normKeywords) {
+            bool matches = false;
+            if (cellNorm == kw ||
+                cellNorm.startsWith('$kw ') ||
+                cellNorm.startsWith('$kw:') ||
+                cellNorm.startsWith(kw)) {
+              if (kw.length <= 3) {
+                matches = RegExp('\\b${RegExp.escape(kw)}\\b').hasMatch(cellNorm);
+              } else {
+                matches = true;
+              }
+            }
+
+            if (matches) {
+              labelFound = true;
+
+              // 1. Colon-separated key/value in the same cell (e.g., "PRODUCCIÓN: ALCANZAR UNA ESTRELLA")
+              if (rawCell.contains(':')) {
+                final colonIdx = rawCell.indexOf(':');
+                final afterColon = rawCell.substring(colonIdx + 1).trim();
+                if (afterColon.isNotEmpty) {
+                  return afterColon;
+                }
+              }
+
+              // 2. Value in subsequent cells on the same row
+              for (int nc = c + 1; nc < sheet.maxColumns; nc++) {
+                final v = getCellString(nc, r);
+                if (v.isNotEmpty) {
+                  // If next cell is another label ending with ':', do not treat as value
+                  if (v.trim().endsWith(':')) break;
+                  return v;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (labelFound) {
+        return '';
+      }
+
+      final cleanFallback = fallback.trim();
+      if (cleanFallback.endsWith(':')) return '';
+      return cleanFallback;
+    }
+
     var metadata = ShootingLogMetadata(
-      producer: getCellString(1, 0), // B1
-      production: getCellString(1, 1), // B2
-      nomenclature: getCellString(1, 2), // B3
-      location: getCellString(1, 3), // B4
-      date: getCellString(1, 4), // B5
-      unit: getCellString(4, 0), // E1
-      day: getCellString(4, 1), // E2
-      audioFormat: getCellString(4, 2), // E3 (legacy format)
+      production: findMetadata(['PRODUCCION', 'PRODUCCION'], fallback: getCellString(1, 1)),
+      producer: findMetadata(['DIR. RESPONSABLE', 'DIR RESPONSABLE', 'PRODUCTOR', 'DIRECTOR'], fallback: getCellString(1, 0)),
+      nomenclature: findMetadata(['NOMENCLATURA', 'NOM'], fallback: getCellString(1, 2)),
+      location: findMetadata(['LOCACION', 'LOC'], fallback: getCellString(1, 3)),
+      date: findMetadata(['FECHA DE GRABACION', 'FECHA'], fallback: getCellString(1, 4)),
+      unit: findMetadata(['UNIDAD', 'HORARIO', 'US'], fallback: getCellString(4, 0)),
+      day: findMetadata(['GUIA DE GRABACION', 'DIA'], fallback: getCellString(4, 1)),
+      audioFormat: findMetadata(['FORMATO', 'AUDIO FORMAT'], fallback: getCellString(4, 2)),
       frameRate: '',
       videoCodec: '',
-      responsibleEngineer: getCellString(4, 3), // E4
-      ingestor: getCellString(4, 4), // E5
+      responsibleEngineer: findMetadata(['ING. RESPONSABLE', 'ING RESPONSABLE', 'INGENIERO'], fallback: getCellString(4, 3)),
+      ingestor: findMetadata(['DATA MANAGER', 'INGESTADOR'], fallback: getCellString(4, 4)),
     );
 
-    // Extract Records starting from Row 8 (index 7)
     List<ShotRecord> records = [];
-    int rowIndex = 7;
+    int rowIndex = headerRowIndex + 1;
+
+    String lastCap = '';
+    String lastScene = '';
+    String lastPlane = '';
+    int emptyRowCount = 0;
 
     while (rowIndex < sheet.maxRows) {
-      // Check if entire row is essentially empty
       bool isEmptyRow = true;
-      for (int c = 0; c <= 10; c++) {
+      for (int c = 0; c < sheet.maxColumns; c++) {
         if (getCellString(c, rowIndex).isNotEmpty) {
           isEmptyRow = false;
           break;
         }
       }
-      
       if (isEmptyRow) {
-        // Stop parsing when entirely blank row is encountered
-        break;
+        emptyRowCount++;
+        if (emptyRowCount >= 5) {
+          break;
+        }
+        rowIndex++;
+        continue;
+      }
+      emptyRowCount = 0;
+
+      String cap = colCap >= 0 ? getCellString(colCap, rowIndex) : '';
+      String escena = colScene >= 0 ? getCellString(colScene, rowIndex) : '';
+      String plano = colPlane >= 0 ? getCellString(colPlane, rowIndex) : '';
+      String toma = colTake >= 0 ? getCellString(colTake, rowIndex) : '';
+
+      // Forward-fill for consecutive takes of the same setup
+      if (cap.isNotEmpty) {
+        lastCap = cap;
+      } else if (lastCap.isNotEmpty && toma.isNotEmpty) {
+        cap = lastCap;
       }
 
-      String cap = getCellString(0, rowIndex);
-      String escena = getCellString(1, rowIndex);
-      String plano = getCellString(2, rowIndex);
-      String toma = getCellString(3, rowIndex);
-      
-      String camA = getCellString(4, rowIndex);
-      String camB = getCellString(5, rowIndex);
-      String camC = getCellString(6, rowIndex);
-      
-      String reel = getCellString(7, rowIndex);
-      String tcIn = getCellString(8, rowIndex);
-      String tcOut = getCellString(9, rowIndex);
-      String observaciones = getCellString(10, rowIndex);
-
-      // Process cameras
-      List<CameraTakeRecord> cameras = [];
-      void processCam(String name, String value) {
-        if (value.isNotEmpty) {
-          // Pad numeric clip to 3 digits
-          String formattedClip = value;
-          if (int.tryParse(value) != null) {
-            formattedClip = int.parse(value).toString().padLeft(3, '0');
-          }
-          cameras.add(CameraTakeRecord(cameraName: name, clipName: formattedClip));
+      if (escena.isNotEmpty && escena != lastScene) {
+        // New scene starts: update lastScene and reset lastPlane to this row's plano
+        lastScene = escena;
+        lastPlane = plano;
+      } else {
+        // Same scene or empty escena: inherit lastScene if empty
+        if (escena.isEmpty && lastScene.isNotEmpty && toma.isNotEmpty) {
+          escena = lastScene;
+        }
+        if (plano.isNotEmpty) {
+          lastPlane = plano;
+        } else if (lastPlane.isNotEmpty && toma.isNotEmpty) {
+          plano = lastPlane;
         }
       }
 
-      processCam('A', camA);
-      processCam('B', camB);
-      processCam('C', camC);
+      if (escena.isEmpty && toma.isEmpty) {
+        rowIndex++;
+        continue;
+      }
+
+      List<CameraTakeRecord> cameras = [];
+      void processCam(String name, String value) {
+        final trimmed = value.trim();
+        if (trimmed.isEmpty ||
+            trimmed == '/' ||
+            trimmed == '-' ||
+            trimmed == '—' ||
+            trimmed == '–' ||
+            RegExp(r'^[/\\-]+$').hasMatch(trimmed) ||
+            trimmed.toUpperCase() == 'X' ||
+            trimmed.toUpperCase() == 'N/A') {
+          return;
+        }
+        String formattedClip = trimmed;
+        if (int.tryParse(trimmed) != null) {
+          formattedClip = int.parse(trimmed).toString().padLeft(3, '0');
+        }
+        cameras.add(CameraTakeRecord(cameraName: name, clipName: formattedClip));
+      }
+
+      for (var entry in camCols.entries) {
+        processCam(entry.key, getCellString(entry.value, rowIndex));
+      }
+
+      String reel = colReel >= 0 ? getCellString(colReel, rowIndex) : '';
+      if (reel.isEmpty && headerReel != null && headerReel.isNotEmpty) {
+        reel = headerReel;
+      }
+      if (reel.isEmpty) {
+        reel = '001';
+      }
+
+      String tcIn = colTcIn >= 0 ? getCellString(colTcIn, rowIndex) : '';
+      String tcOut = colTcOut >= 0 ? getCellString(colTcOut, rowIndex) : '';
+      String observaciones = colObs >= 0 ? getCellString(colObs, rowIndex) : '';
 
       records.add(ShotRecord(
         chapter: cap,

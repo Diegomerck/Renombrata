@@ -49,6 +49,7 @@ void main() {
 
       // Read CSV to verify content
       final csvContent = csvFile.readAsStringSync();
+      expect(csvContent.contains('CAPÍTULO'), true);
       expect(csvContent.contains('MNL_071026_10_1_T1_A007_D3_U3.MP4'), true);
       expect(csvContent.contains('C0001.MP4'), true);
       expect(csvContent.contains('Good take, maybe'), true); // Comma correctly escaped
