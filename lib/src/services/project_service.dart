@@ -20,12 +20,8 @@ class ProjectService {
     final file = File(path);
     
     // Update the lastModified timestamp right before saving
-    final projectToSave = RenombrataProject(
-      version: project.version,
+    final projectToSave = project.copyWith(
       lastModified: DateTime.now().toUtc().toIso8601String(),
-      log: project.log,
-      defaultReel: project.defaultReel,
-      activeCamera: project.activeCamera,
     );
 
     final jsonString = jsonEncode(projectToSave.toJson());

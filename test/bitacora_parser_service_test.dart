@@ -106,8 +106,8 @@ void main() {
       expect(r1.plane, '1');
       expect(r1.take, '1');
       expect(r1.reel, '038');
-      expect(r1.tcIn, '15:01');
-      expect(r1.tcOut, '15:04');
+      expect(r1.tcIn, '15:01:00:00');
+      expect(r1.tcOut, '15:04:00:00');
 
       // Verify Row 2 inherits: Cap 15, Scene 3, Plane 1, Take 2, Reel 038
       final r2 = log.records[1];

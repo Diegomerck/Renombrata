@@ -1,9 +1,11 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:renombrata/src/models/app_settings.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/services/clip_matcher_service.dart';
+import 'package:renombrata/src/services/live_timecode_service.dart';
 import 'package:renombrata/src/utils/timecode_formatter.dart';
 import 'package:uuid/uuid.dart';
 
@@ -11,12 +13,14 @@ class BitacoraEditorTab extends StatefulWidget {
   final RenombrataProject project;
   final ValueChanged<RenombrataProject> onProjectChanged;
   final AppSettings settings;
+  final LiveTimecodeService? timecodeService;
 
   const BitacoraEditorTab({
     super.key,
     required this.project,
     required this.onProjectChanged,
     this.settings = const AppSettings(),
+    this.timecodeService,
   });
 
   /// Sorts records by the numeric clip identifier for the active camera.
@@ -61,6 +65,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   List<({int index, ShotRecord record})>? _lastDeletedRecords;
   final Set<String> _expandedRecordIds = {};
   final Set<String> _selectedRecordIds = {};
+  String? _autofocusFieldId;
+  FocusNode? _activeAutofocusNode;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -77,9 +83,22 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   late final TextEditingController _videoCodecController;
   late final TextEditingController _audioFormatController;
 
+  late final LiveTimecodeService _timecodeService;
+  bool _ownsTimecodeService = false;
+
   @override
   void initState() {
     super.initState();
+    if (widget.timecodeService != null) {
+      _timecodeService = widget.timecodeService!;
+      _ownsTimecodeService = false;
+    } else {
+      _timecodeService = LiveTimecodeService(
+        frameRate: widget.project.log.metadata.frameRate,
+      );
+      _ownsTimecodeService = true;
+    }
+
     final meta = widget.project.log.metadata;
     _productionController = TextEditingController(text: meta.production);
     _nomenclatureController = TextEditingController(text: meta.nomenclature);
@@ -98,6 +117,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   @override
   void didUpdateWidget(BitacoraEditorTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.project.log.metadata.frameRate != widget.project.log.metadata.frameRate) {
+      _timecodeService.updateFrameRate(widget.project.log.metadata.frameRate);
+    }
+
     if (oldWidget.project.log.metadata.production != widget.project.log.metadata.production || 
         oldWidget.project.log.metadata.date != widget.project.log.metadata.date) {
       _lastDeletedRecords = null;
@@ -128,6 +151,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   @override
   void dispose() {
+    _activeAutofocusNode?.dispose();
+    if (_ownsTimecodeService) {
+      _timecodeService.dispose();
+    }
     _scrollController.dispose();
     _productionController.dispose();
     _nomenclatureController.dispose();
@@ -237,16 +264,72 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     _updateRecords(sorted);
   }
 
+  void _undoLastDeletion() {
+    if (_lastDeletedRecords == null || _lastDeletedRecords!.isEmpty) return;
+    final restoredRecords = List<ShotRecord>.from(widget.project.log.records);
+    final itemsToRestore = List<({int index, ShotRecord record})>.from(_lastDeletedRecords!)
+      ..sort((a, b) => a.index.compareTo(b.index));
+
+    for (final item in itemsToRestore) {
+      if (item.index <= restoredRecords.length) {
+        restoredRecords.insert(item.index, item.record);
+      } else {
+        restoredRecords.add(item.record);
+      }
+    }
+    setState(() {
+      _lastDeletedRecords = null;
+    });
+    _updateRecords(restoredRecords);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _buildHeaderCard(),
-        Expanded(
-          child: _buildDataGrid(),
+    final records = widget.project.log.records;
+    final hasRecords = records.isNotEmpty;
+    final hasDeleted = _lastDeletedRecords != null && _lastDeletedRecords!.isNotEmpty;
+
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true): _addNewRecord,
+        const SingleActivator(LogicalKeyboardKey.keyN, meta: true): _addNewRecord,
+        const SingleActivator(LogicalKeyboardKey.keyD, control: true): () {
+          if (hasRecords) _duplicateLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true): () {
+          if (hasRecords) _duplicateLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () {
+          if (hasRecords) _stampCutOnLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () {
+          if (hasRecords) _stampCutOnLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyO, control: true): () {
+          if (hasRecords) _stampCutOnLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyO, meta: true): () {
+          if (hasRecords) _stampCutOnLastRecord();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () {
+          if (hasDeleted) _undoLastDeletion();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () {
+          if (hasDeleted) _undoLastDeletion();
+        },
+      },
+      child: Focus(
+        autofocus: _activeAutofocusNode == null,
+        child: Column(
+          children: [
+            _buildHeaderCard(),
+            Expanded(
+              child: _buildDataGrid(),
+            ),
+            _buildFooterActions(),
+          ],
         ),
-        _buildFooterActions(),
-      ],
+      ),
     );
   }
 
@@ -254,7 +337,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     final meta = widget.project.log.metadata;
 
     return Card(
-      margin: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ExpansionTile(
         title: const Text('Metadata de Producción', style: TextStyle(fontWeight: FontWeight.bold)),
         initiallyExpanded: _isHeaderExpanded,
@@ -265,7 +348,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         },
         children: [
           Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final double width = constraints.maxWidth > 900 ? constraints.maxWidth : 900;
@@ -286,7 +369,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                             Expanded(child: _buildTextField('Día de grabación', _dayController, (v) => _updateMetadata(meta.copyWith(day: v)))),
                           ],
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 8),
                         Row(
                           children: [
                             Expanded(child: _buildTextField('Unidad', _unitController, (v) => _updateMetadata(meta.copyWith(unit: v)))),
@@ -298,7 +381,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                             Expanded(child: _buildTextField('Ing. Responsable', _responsibleEngineerController, (v) => _updateMetadata(meta.copyWith(responsibleEngineer: v)))),
                           ],
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 8),
                         Row(
                           children: [
                             Expanded(child: _buildTextField('Ingestador', _ingestorController, (v) => _updateMetadata(meta.copyWith(ingestor: v)))),
@@ -310,13 +393,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                             Expanded(child: _buildTextField('Audio Format', _audioFormatController, (v) => _updateMetadata(meta.copyWith(audioFormat: v)))),
                           ],
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 8),
                         Align(
                           alignment: Alignment.centerRight,
-                          child: ElevatedButton.icon(
-                            onPressed: _showCameraConfigDialog,
-                            icon: const Icon(Icons.videocam),
-                            label: const Text('Configurar Cámaras'),
+                          child: FilledButton.icon(
+                            onPressed: _showConfigDialog,
+                            icon: const Icon(Icons.tune, size: 18),
+                            label: const Text('Configurar', style: TextStyle(fontWeight: FontWeight.bold)),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Theme.of(context).colorScheme.primary,
+                              foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            ),
                           ),
                         ),
                       ],
@@ -443,22 +532,38 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   }
 
   void _addNewRecord() {
+    final tcIn = _timecodeService.isAutoStampEnabled
+        ? _timecodeService.currentFormattedTimecodeZeroFrames
+        : '';
     final newRecord = ShotRecord(
       chapter: '',
       scene: '',
       plane: '',
-      take: '',
+      take: '1',
       cameras: [],
       reel: widget.project.defaultReel.isNotEmpty ? widget.project.defaultReel : '001',
+      tcIn: tcIn,
     );
     final newRecords = List<ShotRecord>.from(widget.project.log.records);
     newRecords.add(newRecord);
+    final targetField = widget.project.showChapter ? 'cap' : 'scene';
+    _activeAutofocusNode?.dispose();
+    final focusNode = FocusNode();
+    _activeAutofocusNode = focusNode;
+    _autofocusFieldId = '${newRecord.id}_$targetField';
+
     setState(() {
       _expandedRecordIds.clear();
       _expandedRecordIds.add(newRecord.id);
     });
     _updateRecords(newRecords);
     _scrollToBottom();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _activeAutofocusNode == focusNode) {
+        focusNode.requestFocus();
+      }
+    });
   }
 
   void _duplicateLastRecord() {
@@ -473,22 +578,124 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       nextTake = (takeNum + 1).toString();
     }
 
+    final tcIn = _timecodeService.isAutoStampEnabled
+        ? _timecodeService.currentFormattedTimecodeZeroFrames
+        : '';
+
     final duplicated = lastRecord.copyWith(
       id: const Uuid().v4(), // Force new ID
       take: nextTake,
       cameras: [], // Empty cameras for new take
-      tcIn: '',
+      tcIn: tcIn,
       tcOut: '',
       observations: '',
     );
     final newRecords = List<ShotRecord>.from(records);
     newRecords.add(duplicated);
+    final targetCam = widget.project.cameraNames.isNotEmpty ? widget.project.cameraNames.first : null;
+    final targetFieldId = targetCam != null ? '${duplicated.id}_clip_$targetCam' : '${duplicated.id}_take';
+
+    _activeAutofocusNode?.dispose();
+    final focusNode = FocusNode();
+    _activeAutofocusNode = focusNode;
+    _autofocusFieldId = targetFieldId;
+
     setState(() {
       _expandedRecordIds.clear();
-      _expandedRecordIds.add(duplicated.id);
     });
     _updateRecords(newRecords);
     _scrollToBottom();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _activeAutofocusNode == focusNode) {
+        focusNode.requestFocus();
+      }
+    });
+  }
+
+  void _stampCutOnLastRecord() {
+    final records = widget.project.log.records;
+    if (records.isEmpty) return;
+
+    final lastIndex = records.length - 1;
+    final lastRecord = records[lastIndex];
+    final cutTc = _timecodeService.currentFormattedTimecodeZeroFrames;
+    final updatedRecord = lastRecord.copyWith(tcOut: cutTc);
+
+    final newRecords = List<ShotRecord>.from(records);
+    newRecords[lastIndex] = updatedRecord;
+    _updateRecords(newRecords);
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('TC Out marcado en Toma ${lastRecord.take.isNotEmpty ? lastRecord.take : "#${lastIndex + 1}"}: $cutTc'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _showJamSyncDialog() async {
+    final currentTc = _timecodeService.currentFormattedTimecode;
+    final controller = TextEditingController(text: currentTc);
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Ajustar Código Manual (Jam Sync)'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Ingresa el código de tiempo maestro (HH:MM:SS:FF) a sincronizar:'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              inputFormatters: [TimecodeTextInputFormatter(_timecodeService.frameRate)],
+              decoration: const InputDecoration(
+                labelText: 'Código Jam',
+                hintText: '01:00:00:00',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('Sincronizar Jam'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      final normalized = TimecodeUtils.normalize(result, _timecodeService.frameRate);
+      final parts = normalized.split(':');
+      if (parts.length == 4) {
+        final h = int.tryParse(parts[0]) ?? 0;
+        final m = int.tryParse(parts[1]) ?? 0;
+        final s = int.tryParse(parts[2]) ?? 0;
+        final f = int.tryParse(parts[3]) ?? 0;
+        _timecodeService.jamTimecode(h, m, s, f);
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Jam Sync fijado en: $normalized'),
+              duration: const Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
   }
 
   Widget _buildDataGrid() {
@@ -538,10 +745,21 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
       for (int i = 0; i < records.length; i++) {
         final r = records[i];
-        final bool isNew = (i == 0) ||
-            (records[i - 1].chapter != r.chapter ||
-             records[i - 1].scene != r.scene ||
-             (records[i - 1].plane ?? '') != (r.plane ?? ''));
+        bool isNew = (i == 0);
+        if (i > 0) {
+          final prev = records[i - 1];
+          final sameSetup = (r.chapter == prev.chapter &&
+                             r.scene == prev.scene &&
+                             (r.plane ?? '') == (prev.plane ?? ''));
+
+          // If chapter and scene are both empty, do not merge into the previous scene
+          // unless both takes share the same setup identity or non-empty scene.
+          if (r.chapter.isEmpty && r.scene.isEmpty) {
+            isNew = true; // Every fresh unassigned "Nueva Toma" gets its own separator banner
+          } else {
+            isNew = !sameSetup;
+          }
+        }
 
         if (isNew) {
           if (i > 0) {
@@ -564,45 +782,58 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         builder: (context, constraints) {
           final double baseWidth = widget.settings.usePagesStyleLayout ? 640.0 : 880.0;
           final double minGridWidth = baseWidth + (widget.project.cameraNames.length * 88.0);
-          final double gridWidth = constraints.maxWidth < minGridWidth ? minGridWidth : constraints.maxWidth;
+          final bool needsHorizontalScroll = constraints.maxWidth < minGridWidth;
+          final double gridWidth = needsHorizontalScroll ? minGridWidth : constraints.maxWidth;
+
+          final gridContent = SizedBox(
+            width: gridWidth,
+            height: constraints.hasBoundedHeight ? constraints.maxHeight : null,
+            child: Column(
+              children: [
+                _buildGridHeader(),
+                Expanded(
+                  child: ReorderableListView.builder(
+                    scrollController: _scrollController,
+                    cacheExtent: 800,
+                    buildDefaultDragHandles: false,
+                    itemCount: records.length,
+                    onReorder: (oldIndex, newIndex) {
+                      setState(() {
+                        if (oldIndex < newIndex) {
+                          newIndex -= 1;
+                        }
+                        final newRecords = List<ShotRecord>.from(records);
+                        final item = newRecords.removeAt(oldIndex);
+                        newRecords.insert(newIndex, item);
+                        _updateRecords(newRecords);
+                      });
+                    },
+                    itemBuilder: (context, index) {
+                      return _buildGridRow(
+                        index,
+                        records[index],
+                        isNewScene: isNewSceneList[index],
+                        sceneTakeCount: sceneTakeCounts[index],
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+
+          if (!needsHorizontalScroll) {
+            return SizedBox(
+              width: constraints.maxWidth,
+              child: gridContent,
+            );
+          }
 
           return SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: gridWidth,
-              height: constraints.hasBoundedHeight ? constraints.maxHeight : null,
-              child: Column(
-                children: [
-                  _buildGridHeader(),
-                  Expanded(
-                    child: ReorderableListView.builder(
-                      scrollController: _scrollController,
-                      buildDefaultDragHandles: false,
-                      itemCount: records.length,
-                      onReorder: (oldIndex, newIndex) {
-                        setState(() {
-                          if (oldIndex < newIndex) {
-                            newIndex -= 1;
-                          }
-                          final newRecords = List<ShotRecord>.from(records);
-                          final item = newRecords.removeAt(oldIndex);
-                          newRecords.insert(newIndex, item);
-                          _updateRecords(newRecords);
-                        });
-                      },
-                      itemBuilder: (context, index) {
-                        return _buildGridRow(
-                          index,
-                          records[index],
-                          isNewScene: isNewSceneList[index],
-                          sceneTakeCount: sceneTakeCounts[index],
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            physics: const ClampingScrollPhysics(),
+            dragStartBehavior: DragStartBehavior.down,
+            child: gridContent,
           );
         },
       ),
@@ -631,12 +862,16 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           const SizedBox(width: 32, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
           const SizedBox(width: 8),
           if (!usePagesStyle) ...[
-            const SizedBox(width: 55, child: Text('Cap', style: TextStyle(fontWeight: FontWeight.bold))),
-            const SizedBox(width: 8),
+            if (widget.project.showChapter) ...[
+              const SizedBox(width: 55, child: Text('Cap', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+            ],
             const SizedBox(width: 130, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
             const SizedBox(width: 8),
-            const SizedBox(width: 55, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
-            const SizedBox(width: 8),
+            if (widget.project.showPlane) ...[
+              const SizedBox(width: 55, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
+              const SizedBox(width: 8),
+            ],
             const SizedBox(width: 60, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
           ] else ...[
             const SizedBox(width: 60, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
@@ -660,8 +895,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           const SizedBox(width: 75, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
           const SizedBox(width: 8),
           const SizedBox(width: 110, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
-          const SizedBox(width: 8),
-          const SizedBox(width: 110, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+          if (widget.project.showTcOut) ...[
+            const SizedBox(width: 8),
+            const SizedBox(width: 110, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+          ],
           const SizedBox(width: 8),
           const Spacer(),
           SizedBox(
@@ -777,40 +1014,44 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               color: theme.colorScheme.onPrimaryContainer,
             ),
           ),
-          const SizedBox(width: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: badgeBg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.fromBorderSide(badgeBorder),
-            ),
-            child: Text(
-              'CAP: ${record.chapter.isNotEmpty ? record.chapter : '—'}',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                color: theme.colorScheme.onSurface,
+          if (widget.project.showChapter) ...[
+            const SizedBox(width: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: badgeBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.fromBorderSide(badgeBorder),
+              ),
+              child: Text(
+                'CAP: ${record.chapter.isNotEmpty ? record.chapter : '—'}',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: badgeBg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.fromBorderSide(badgeBorder),
-            ),
-            child: Text(
-              'PLANO: ${(record.plane != null && record.plane!.isNotEmpty) ? record.plane! : '1'}',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                color: theme.colorScheme.onSurface,
+          ],
+          if (widget.project.showPlane) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: badgeBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.fromBorderSide(badgeBorder),
+              ),
+              child: Text(
+                'PLANO: ${(record.plane != null && record.plane!.isNotEmpty) ? record.plane! : '1'}',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
-          ),
+          ],
           const Spacer(),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -938,17 +1179,21 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               ),
               const SizedBox(width: 8),
               if (!usePagesStyle) ...[
-                SizedBox(
-                  width: 55, 
-                  child: _buildGridCell(
-                    record.chapter, 
-                    (v) => updateRecord(record.copyWith(chapter: v)), 
-                    hintText: 'Cap',
-                    labelText: 'Cap',
-                    key: ValueKey('${record.id}_cap'),
+                if (widget.project.showChapter) ...[
+                  SizedBox(
+                    width: 55, 
+                    child: _buildGridCell(
+                      record.chapter, 
+                      (v) => updateRecord(record.copyWith(chapter: v)), 
+                      hintText: 'Cap',
+                      labelText: 'Cap',
+                      autofocus: _autofocusFieldId == '${record.id}_cap',
+                      focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
+                      key: ValueKey('${record.id}_cap'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 SizedBox(
                   width: 130, 
                   child: _buildGridCell(
@@ -956,21 +1201,25 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     (v) => updateRecord(record.copyWith(scene: v)), 
                     hintText: 'Escena',
                     labelText: 'Escena',
+                    autofocus: _autofocusFieldId == '${record.id}_scene',
+                    focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
                     key: ValueKey('${record.id}_scene'),
                   ),
                 ),
                 const SizedBox(width: 8),
-                SizedBox(
-                  width: 55, 
-                  child: _buildGridCell(
-                    record.plane ?? '', 
-                    (v) => updateRecord(record.copyWith(plane: v)), 
-                    hintText: 'Plano',
-                    labelText: 'Plano',
-                    key: ValueKey('${record.id}_plane'),
+                if (widget.project.showPlane) ...[
+                  SizedBox(
+                    width: 55, 
+                    child: _buildGridCell(
+                      record.plane ?? '', 
+                      (v) => updateRecord(record.copyWith(plane: v)), 
+                      hintText: 'Plano',
+                      labelText: 'Plano',
+                      key: ValueKey('${record.id}_plane'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 SizedBox(
                   width: 60, 
                   child: _buildGridCell(
@@ -978,6 +1227,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     (v) => updateRecord(record.copyWith(take: v)), 
                     hintText: 'Toma',
                     labelText: 'Toma',
+                    autofocus: _autofocusFieldId == '${record.id}_take',
+                    focusNode: (_autofocusFieldId == '${record.id}_take') ? _activeAutofocusNode : null,
+                    key: ValueKey('${record.id}_take'),
                   ),
                 ),
               ] else ...[
@@ -988,6 +1240,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     (v) => updateRecord(record.copyWith(take: v)), 
                     hintText: 'Toma',
                     labelText: 'Toma',
+                    autofocus: _autofocusFieldId == '${record.id}_take',
+                    focusNode: (_autofocusFieldId == '${record.id}_take') ? _activeAutofocusNode : null,
+                    key: ValueKey('${record.id}_take'),
                   ),
                 ),
               ],
@@ -1002,6 +1257,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                       (v) => updateCam(cam, v), 
                       hintText: 'Clip $cam',
                       labelText: 'Cam $cam',
+                      autofocus: _autofocusFieldId == '${record.id}_clip_$cam',
+                      focusNode: (_autofocusFieldId == '${record.id}_clip_$cam') ? _activeAutofocusNode : null,
+                      key: ValueKey('${record.id}_clip_$cam'),
                     ),
                   ),
                 ),
@@ -1029,27 +1287,31 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], 
                     hintText: 'TC In (00:00:00:00)',
                     labelText: 'TC In',
+                    key: ValueKey('${record.id}_tcIn_${record.tcIn ?? ""}'),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 110, 
-                child: Focus(
-                  onFocusChange: (focused) {
-                    if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
-                      updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
-                    }
-                  },
-                  child: _buildGridCell(
-                    record.tcOut ?? '', 
-                    (v) => updateRecord(record.copyWith(tcOut: v)), 
-                    formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], 
-                    hintText: 'TC Out (00:00:00:00)',
-                    labelText: 'TC Out',
+              if (widget.project.showTcOut) ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 110, 
+                  child: Focus(
+                    onFocusChange: (focused) {
+                      if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
+                        updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
+                      }
+                    },
+                    child: _buildGridCell(
+                      record.tcOut ?? '', 
+                      (v) => updateRecord(record.copyWith(tcOut: v)), 
+                      formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], 
+                      hintText: 'TC Out (00:00:00:00)',
+                      labelText: 'TC Out',
+                      key: ValueKey('${record.id}_tcOut_${record.tcOut ?? ""}'),
+                    ),
                   ),
                 ),
-              ),
+              ],
               const SizedBox(width: 8),
               const Spacer(),
               SizedBox(
@@ -1119,17 +1381,21 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               child: Row(
                 children: [
                   if (usePagesStyle) ...[
-                    SizedBox(
-                      width: 55,
-                      child: _buildGridCell(
-                        record.chapter,
-                        (v) => updateRecord(record.copyWith(chapter: v)),
-                        hintText: 'Cap',
-                        labelText: 'Cap',
-                        key: ValueKey('${record.id}_tier2_cap'),
+                    if (widget.project.showChapter) ...[
+                      SizedBox(
+                        width: 55,
+                        child: _buildGridCell(
+                          record.chapter,
+                          (v) => updateRecord(record.copyWith(chapter: v)),
+                          hintText: 'Cap',
+                          labelText: 'Cap',
+                          autofocus: _autofocusFieldId == '${record.id}_cap',
+                          focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
+                          key: ValueKey('${record.id}_tier2_cap'),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
+                      const SizedBox(width: 8),
+                    ],
                     SizedBox(
                       width: 80,
                       child: _buildGridCell(
@@ -1137,34 +1403,40 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                         (v) => updateRecord(record.copyWith(scene: v)),
                         hintText: 'Escena',
                         labelText: 'Escena',
+                        autofocus: _autofocusFieldId == '${record.id}_scene',
+                        focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
                         key: ValueKey('${record.id}_tier2_scene'),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 55,
-                      child: _buildGridCell(
-                        record.plane ?? '',
-                        (v) => updateRecord(record.copyWith(plane: v)),
-                        hintText: 'Plano',
-                        labelText: 'Plano',
-                        key: ValueKey('${record.id}_tier2_plane'),
+                    if (widget.project.showPlane) ...[
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 55,
+                        child: _buildGridCell(
+                          record.plane ?? '',
+                          (v) => updateRecord(record.copyWith(plane: v)),
+                          hintText: 'Plano',
+                          labelText: 'Plano',
+                          key: ValueKey('${record.id}_tier2_plane'),
+                        ),
                       ),
+                    ],
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showMos) ...[
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: record.isMos,
+                          onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        const Text('MOS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                      ],
                     ),
                     const SizedBox(width: 12),
                   ],
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Checkbox(
-                        value: record.isMos,
-                        onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      const Text('MOS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                    ],
-                  ),
-                  const SizedBox(width: 12),
                   Expanded(
                     child: _buildGridCell(
                       record.observations ?? '',
@@ -1180,20 +1452,22 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       ),
     );
 
-    if (usePagesStyle && isNewScene) {
-      return Column(
-        key: ValueKey(record.id),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+    final rowContent = Column(
+      key: ValueKey('row_${record.id}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (usePagesStyle && isNewScene)
           _buildSceneHeaderBanner(record, sceneTakeCount),
-          cardWidget,
-        ],
-      );
-    }
+        KeyedSubtree(
+          key: ValueKey('card_${record.id}'),
+          child: cardWidget,
+        ),
+      ],
+    );
 
-    return KeyedSubtree(
+    return _KeepAliveGridRowItem(
       key: ValueKey(record.id),
-      child: cardWidget,
+      child: rowContent,
     );
   }
 
@@ -1204,15 +1478,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     String? hintText,
     String? labelText,
     bool isGhosted = false,
+    bool autofocus = false,
+    FocusNode? focusNode,
     Key? key,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final defaultTextColor = isDark ? Colors.white : Colors.black87;
     final textColor = isGhosted ? Colors.grey.withValues(alpha: 0.3) : defaultTextColor;
 
-    return TextFormField(
+    final cellField = TextFormField(
       key: key,
       initialValue: isGhosted ? '' : value,
+      autofocus: autofocus,
+      focusNode: focusNode,
       inputFormatters: formatters,
       decoration: InputDecoration(
         labelText: labelText,
@@ -1264,57 +1542,121 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       ),
       onChanged: onChanged,
     );
+
+    return cellField;
   }
 
-  void _showCameraConfigDialog() {
+  void _showConfigDialog() {
     List<String> tempCameras = List.from(widget.project.cameraNames);
-    
+    bool tempShowChapter = widget.project.showChapter;
+    bool tempShowPlane = widget.project.showPlane;
+    bool tempShowMos = widget.project.showMos;
+    bool tempShowTcOut = widget.project.showTcOut;
+
     showDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
             return AlertDialog(
-              title: const Text('Configurar Cámaras'),
+              title: const Text('Configuración de Bitácora'),
               content: SizedBox(
-                width: 350,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (int i = 0; i < tempCameras.length; i++)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: TextFormField(
-                                initialValue: tempCameras[i],
-                                onChanged: (val) => tempCameras[i] = val,
-                                decoration: const InputDecoration(labelText: 'Nombre de cámara', isDense: true),
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed: () {
-                                setStateDialog(() {
-                                  tempCameras.removeAt(i);
-                                });
-                              },
-                            )
-                          ],
-                        ),
+                width: 440,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Columnas y Campos Visibles',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                       ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text('Agregar cámara'),
-                      onPressed: () {
-                        setStateDialog(() {
-                          tempCameras.add('CÁMARA ${tempCameras.length + 1}');
-                        });
-                      },
-                    )
-                  ],
+                      const SizedBox(height: 8),
+                      CheckboxListTile(
+                        title: const Text('Capítulo'),
+                        value: tempShowChapter,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            tempShowChapter = val ?? true;
+                          });
+                        },
+                      ),
+                      CheckboxListTile(
+                        title: const Text('Plano'),
+                        value: tempShowPlane,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            tempShowPlane = val ?? true;
+                          });
+                        },
+                      ),
+                      CheckboxListTile(
+                        title: const Text('MOS'),
+                        value: tempShowMos,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            tempShowMos = val ?? true;
+                          });
+                        },
+                      ),
+                      CheckboxListTile(
+                        title: const Text('TC Out'),
+                        value: tempShowTcOut,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            tempShowTcOut = val ?? true;
+                          });
+                        },
+                      ),
+                      const Divider(height: 24),
+                      const Text(
+                        'Configuración de Cámaras',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      const SizedBox(height: 8),
+                      for (int i = 0; i < tempCameras.length; i++)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  initialValue: tempCameras[i],
+                                  onChanged: (val) => tempCameras[i] = val,
+                                  decoration: const InputDecoration(labelText: 'Nombre de cámara', isDense: true),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () {
+                                  setStateDialog(() {
+                                    tempCameras.removeAt(i);
+                                  });
+                                },
+                              )
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.add),
+                        label: const Text('Agregar cámara'),
+                        onPressed: () {
+                          setStateDialog(() {
+                            tempCameras.add('CÁMARA ${tempCameras.length + 1}');
+                          });
+                        },
+                      )
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -1322,7 +1664,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                   onPressed: () => Navigator.pop(context),
                   child: const Text('Cancelar'),
                 ),
-                ElevatedButton(
+                FilledButton(
                   onPressed: () {
                     tempCameras.removeWhere((c) => c.trim().isEmpty);
                     if (tempCameras.isEmpty) tempCameras.add('A');
@@ -1340,6 +1682,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     final updatedLog = widget.project.log.copyWith(records: updatedRecords);
                     widget.onProjectChanged(widget.project.copyWith(
                       cameraNames: tempCameras,
+                      showChapter: tempShowChapter,
+                      showPlane: tempShowPlane,
+                      showMos: tempShowMos,
+                      showTcOut: tempShowTcOut,
                       log: updatedLog,
                     ));
                     setState(() {});
@@ -1357,6 +1703,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   Widget _buildFooterActions() {
     final records = widget.project.log.records;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Wrap(
@@ -1364,16 +1713,150 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          ElevatedButton.icon(
-            onPressed: _addNewRecord,
-            icon: const Icon(Icons.add),
-            label: const Text('Nueva Toma'),
+          // 1. Live Timecode Badge with TOD/JAM & Sync PopupMenu
+          ListenableBuilder(
+            listenable: _timecodeService,
+            builder: (context, _) {
+              return Container(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primaryContainer.withValues(alpha: isDark ? 0.4 : 0.6),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: theme.colorScheme.primary, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.fiber_manual_record, size: 10, color: Colors.redAccent),
+                          const SizedBox(width: 5),
+                          Text(
+                            _timecodeService.currentFormattedTimecode,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w900,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primary,
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                            child: Text(
+                              _timecodeService.isTimeOfDay ? 'TOD' : 'JAM',
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: theme.colorScheme.onPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      icon: const Icon(Icons.access_time, size: 18),
+                      tooltip: 'Sincronización de Reloj',
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      onSelected: (value) {
+                        if (value == 'tod') {
+                          _timecodeService.syncToTimeOfDay();
+                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Sincronizado a Reloj del Sistema (Time of Day - TOD)'),
+                              duration: Duration(seconds: 2),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        } else if (value == 'jam') {
+                          _showJamSyncDialog();
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                          value: 'tod',
+                          child: Row(
+                            children: [
+                              Icon(Icons.schedule, size: 16),
+                              SizedBox(width: 8),
+                              Text('Sincronizar Reloj (TOD - Hora Real)'),
+                            ],
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'jam',
+                          child: Row(
+                            children: [
+                              Icon(Icons.tune, size: 16),
+                              SizedBox(width: 8),
+                              Text('Ajustar Código Manual (Jam Sync)...'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
-          ElevatedButton.icon(
-            onPressed: records.isEmpty ? null : _duplicateLastRecord,
-            icon: const Icon(Icons.copy),
-            label: const Text('Duplicar última toma'),
+          // 2. Auto TC Checkbox
+          ListenableBuilder(
+            listenable: _timecodeService,
+            builder: (context, _) {
+              return Tooltip(
+                message: 'Aplica automáticamente el código de tiempo a nuevas tomas',
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Checkbox(
+                      value: _timecodeService.isAutoStampEnabled,
+                      onChanged: (val) {
+                        _timecodeService.toggleAutoStamp(val ?? true);
+                      },
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    const Text('Auto TC', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              );
+            },
           ),
+          // 3. Nueva Toma (Ctrl+N)
+          Tooltip(
+            message: 'Crear una nueva toma vacía (Ctrl+N)',
+            child: ElevatedButton.icon(
+              onPressed: _addNewRecord,
+              icon: const Icon(Icons.add),
+              label: const Text('Nueva Toma'),
+            ),
+          ),
+          // 4. Marcar Corte (Ctrl+K)
+          Tooltip(
+            message: 'Estampa el código de tiempo actual en TC Out de la última toma (Ctrl+K)',
+            child: ElevatedButton.icon(
+              onPressed: records.isEmpty ? null : _stampCutOnLastRecord,
+              icon: const Icon(Icons.stop_circle_outlined, size: 16),
+              label: const Text('Marcar Corte'),
+            ),
+          ),
+          // 5. Duplicar última toma (Ctrl+D)
+          Tooltip(
+            message: 'Duplica la última toma incrementando el número de toma (Ctrl+D)',
+            child: ElevatedButton.icon(
+              onPressed: records.isEmpty ? null : _duplicateLastRecord,
+              icon: const Icon(Icons.copy),
+              label: const Text('Duplicar última toma'),
+            ),
+          ),
+          // 6. Reordenar por Clip
           Tooltip(
             message: 'Reorganizar todas las tomas según la secuencia numérica de clips',
             child: OutlinedButton.icon(
@@ -1382,33 +1865,44 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               onPressed: records.isEmpty ? null : _reorderRecordsByClip,
             ),
           ),
+          // 7. Contador de tomas registradas
           Text(
             '${records.length} tomas registradas',
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
-          ElevatedButton.icon(
-            onPressed: (_lastDeletedRecords == null || _lastDeletedRecords!.isEmpty) ? null : () {
-              final restoredRecords = List<ShotRecord>.from(widget.project.log.records);
-              final itemsToRestore = List<({int index, ShotRecord record})>.from(_lastDeletedRecords!)
-                ..sort((a, b) => a.index.compareTo(b.index));
-
-              for (final item in itemsToRestore) {
-                if (item.index <= restoredRecords.length) {
-                  restoredRecords.insert(item.index, item.record);
-                } else {
-                  restoredRecords.add(item.record);
-                }
-              }
-              setState(() {
-                _lastDeletedRecords = null;
-              });
-              _updateRecords(restoredRecords);
-            },
-            icon: const Icon(Icons.undo),
-            label: const Text('Deshacer eliminación'),
+          // 8. Deshacer eliminación (Ctrl+Z)
+          Tooltip(
+            message: 'Restaurar las últimas tomas eliminadas (Ctrl+Z)',
+            child: ElevatedButton.icon(
+              onPressed: (_lastDeletedRecords == null || _lastDeletedRecords!.isEmpty)
+                  ? null
+                  : _undoLastDeletion,
+              icon: const Icon(Icons.undo),
+              label: const Text('Deshacer eliminación'),
+            ),
           ),
         ],
       ),
     );
+  }
+}
+
+class _KeepAliveGridRowItem extends StatefulWidget {
+  final Widget child;
+  const _KeepAliveGridRowItem({super.key, required this.child});
+
+  @override
+  State<_KeepAliveGridRowItem> createState() => _KeepAliveGridRowItemState();
+}
+
+class _KeepAliveGridRowItemState extends State<_KeepAliveGridRowItem>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }

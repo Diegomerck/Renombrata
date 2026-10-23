@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:excel/excel.dart';
 import '../models/shooting_log.dart';
+import '../utils/timecode_formatter.dart';
 
 class BitacoraParserService {
   /// Fixes common Excel package incompatibilities with Apple Numbers and Televisa exports:
@@ -349,8 +350,10 @@ class BitacoraParserService {
         reel = '001';
       }
 
-      String tcIn = colTcIn >= 0 ? getCellString(colTcIn, rowIndex) : '';
-      String tcOut = colTcOut >= 0 ? getCellString(colTcOut, rowIndex) : '';
+      String rawTcIn = colTcIn >= 0 ? getCellString(colTcIn, rowIndex) : '';
+      String rawTcOut = colTcOut >= 0 ? getCellString(colTcOut, rowIndex) : '';
+      String tcIn = rawTcIn.isNotEmpty ? TimecodeUtils.normalize(rawTcIn, '24') : '';
+      String tcOut = rawTcOut.isNotEmpty ? TimecodeUtils.normalize(rawTcOut, '24') : '';
       String observaciones = colObs >= 0 ? getCellString(colObs, rowIndex) : '';
 
       records.add(ShotRecord(

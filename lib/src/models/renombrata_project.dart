@@ -9,6 +9,10 @@ class RenombrataProject {
   final String activeCamera;
   final List<String> cameraNames;
   final bool autoSortByClip;
+  final bool showChapter;
+  final bool showPlane;
+  final bool showMos;
+  final bool showTcOut;
 
   RenombrataProject({
     this.version = "2.0",
@@ -18,6 +22,10 @@ class RenombrataProject {
     required this.activeCamera,
     this.cameraNames = const ['A', 'B', 'C'],
     this.autoSortByClip = true,
+    this.showChapter = true,
+    this.showPlane = true,
+    this.showMos = true,
+    this.showTcOut = true,
   }) : lastModified = lastModified ?? DateTime.now().toUtc().toIso8601String();
 
   RenombrataProject copyWith({
@@ -28,6 +36,10 @@ class RenombrataProject {
     String? activeCamera,
     List<String>? cameraNames,
     bool? autoSortByClip,
+    bool? showChapter,
+    bool? showPlane,
+    bool? showMos,
+    bool? showTcOut,
   }) {
     return RenombrataProject(
       version: version ?? this.version,
@@ -37,6 +49,10 @@ class RenombrataProject {
       activeCamera: activeCamera ?? this.activeCamera,
       cameraNames: cameraNames ?? this.cameraNames,
       autoSortByClip: autoSortByClip ?? this.autoSortByClip,
+      showChapter: showChapter ?? this.showChapter,
+      showPlane: showPlane ?? this.showPlane,
+      showMos: showMos ?? this.showMos,
+      showTcOut: showTcOut ?? this.showTcOut,
     );
   }
 
@@ -48,6 +64,10 @@ class RenombrataProject {
     'activeCamera': activeCamera,
     'cameraNames': cameraNames,
     'autoSortByClip': autoSortByClip,
+    'showChapter': showChapter,
+    'showPlane': showPlane,
+    'showMos': showMos,
+    'showTcOut': showTcOut,
     'records': log.records.map((r) => r.toJson()).toList(),
   };
 
@@ -67,6 +87,10 @@ class RenombrataProject {
       activeCamera: json['activeCamera'] as String? ?? 'A',
       cameraNames: (json['cameraNames'] as List<dynamic>?)?.map((e) => e as String).toList() ?? ['A', 'B', 'C'],
       autoSortByClip: json['autoSortByClip'] as bool? ?? true,
+      showChapter: json['showChapter'] as bool? ?? true,
+      showPlane: json['showPlane'] as bool? ?? true,
+      showMos: json['showMos'] as bool? ?? true,
+      showTcOut: json['showTcOut'] as bool? ?? true,
     );
   }
 }

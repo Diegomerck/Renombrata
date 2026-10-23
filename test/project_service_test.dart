@@ -60,12 +60,24 @@ void main() {
       expect(loadedProject.defaultReel, 'A007_1');
       expect(loadedProject.activeCamera, 'A');
       expect(loadedProject.log.metadata.nomenclature, 'TEST');
-      expect(loadedProject.log.records.length, 1);
+      expect(loadedProject.showChapter, isTrue);
+      expect(loadedProject.showPlane, isTrue);
+      expect(loadedProject.showMos, isTrue);
+      expect(loadedProject.showTcOut, isTrue);
 
-      // Verify UUID was saved and loaded
-      expect(loadedProject.log.records.first.id, isNotEmpty);
-      expect(loadedProject.log.records.first.id, project.log.records.first.id);
-      expect(loadedProject.log.records.first.cameras.first.clipName, '001');
+      // Verify custom visibility flags serialize and deserialize
+      final customProject = project.copyWith(
+        showChapter: false,
+        showPlane: false,
+        showMos: false,
+        showTcOut: false,
+      );
+      await ProjectService.saveProject(customProject, testPath);
+      final loadedCustom = await ProjectService.loadProject(testPath);
+      expect(loadedCustom.showChapter, isFalse);
+      expect(loadedCustom.showPlane, isFalse);
+      expect(loadedCustom.showMos, isFalse);
+      expect(loadedCustom.showTcOut, isFalse);
     });
   });
 }

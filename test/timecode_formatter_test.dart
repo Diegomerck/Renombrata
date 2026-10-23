@@ -33,5 +33,22 @@ void main() {
       expect(TimecodeUtils.normalize('01000035', '30'), '01:00:00:29');
       expect(TimecodeUtils.normalize('01000035', '59.94'), '01:00:00:29');
     });
+
+    test('normalizes HH:MM to 8 digits by appending :00:00', () {
+      expect(TimecodeUtils.normalize('15:01', '24'), '15:01:00:00');
+      expect(TimecodeUtils.normalize('15:04', '24'), '15:04:00:00');
+      expect(TimecodeUtils.normalize('9:05', '24'), '09:05:00:00');
+      expect(TimecodeUtils.normalize('1501', '24'), '15:01:00:00');
+    });
+
+    test('normalizes HH:MM:SS to 8 digits by appending :00 frames', () {
+      expect(TimecodeUtils.normalize('15:01:30', '24'), '15:01:30:00');
+      expect(TimecodeUtils.normalize('09:05:15', '24'), '09:05:15:00');
+    });
+
+    test('withZeroFrames zeroes out frame digits', () {
+      expect(TimecodeUtils.withZeroFrames('13:00:09:14'), '13:00:09:00');
+      expect(TimecodeUtils.withZeroFrames('01:02:03:23'), '01:02:03:00');
+    });
   });
 }
