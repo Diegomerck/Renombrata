@@ -1044,11 +1044,13 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                       ),
                     ),
                   ),
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
+                  child: Material(
+                    color: Colors.transparent,
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                         // Live Convention Name Card
                         Card(
                           elevation: 0,
@@ -1325,6 +1327,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                     ),
                   ),
                 ),
+              ),
               ],
             ),
           ),
