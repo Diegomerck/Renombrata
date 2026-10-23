@@ -1,0 +1,133 @@
+name: Desktop Field Release (Windows & macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v1.0.0-beta.1)'
+        required: false
+        default: 'v1.0.0-beta.1'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Run automated test suite
+        run: flutter test
+
+      - name: Build Windows executable
+        run: flutter build windows --release
+
+      - name: Package Windows standalone ZIP
+        shell: pwsh
+        run: |
+          $sourceDir = "build/windows/x64/runner/Release"
+          $zipPath = "Renombrata-Windows-x64.zip"
+          Compress-Archive -Path "$sourceDir/*" -DestinationPath $zipPath -Force
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Renombrata-Windows-x64
+          path: Renombrata-Windows-x64.zip
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS Release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Run automated test suite
+        run: flutter test
+
+      - name: Build macOS Application Bundle
+        run: flutter build macos --release
+
+      - name: Package macOS application ZIP
+        run: |
+          cd build/macos/Build/Products/Release
+          APP_NAME=$(ls -d *.app | head -n 1)
+          if [ "$APP_NAME" != "Renombrata.app" ] && [ -d "$APP_NAME" ]; then
+            mv "$APP_NAME" Renombrata.app
+          fi
+          # Preserve symlinks and resource forks
+          ditto -c -k --sequesterRsrc --keepParent Renombrata.app ../../../../../Renombrata-macOS-Universal.zip
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Renombrata-macOS-Universal
+          path: Renombrata-macOS-Universal.zip
+          retention-days: 7
+
+  publish-release:
+    name: Publish to GitHub Releases
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Renombrata-Windows-x64
+          path: ./dist
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Renombrata-macOS-Universal
+          path: ./dist
+
+      - name: Determine Release Tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: Renombrata ${{ steps.release_tag.outputs.tag }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            ./dist/Renombrata-Windows-x64.zip
+            ./dist/Renombrata-macOS-Universal.zip
