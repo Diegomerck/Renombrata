@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,6 +68,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   final Set<String> _selectedRecordIds = {};
   String? _autofocusFieldId;
   FocusNode? _activeAutofocusNode;
+  String? _cutFeedbackMessage;
+  Timer? _cutFeedbackTimer;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -151,6 +154,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   @override
   void dispose() {
+    _cutFeedbackTimer?.cancel();
     _activeAutofocusNode?.dispose();
     if (_ownsTimecodeService) {
       _timecodeService.dispose();
@@ -626,14 +630,17 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     newRecords[lastIndex] = updatedRecord;
     _updateRecords(newRecords);
 
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('TC Out marcado en Toma ${lastRecord.take.isNotEmpty ? lastRecord.take : "#${lastIndex + 1}"}: $cutTc'),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    _cutFeedbackTimer?.cancel();
+    setState(() {
+      _cutFeedbackMessage = 'TC Out: $cutTc (Toma ${lastRecord.take.isNotEmpty ? lastRecord.take : "#${lastIndex + 1}"})';
+    });
+    _cutFeedbackTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (mounted) {
+        setState(() {
+          _cutFeedbackMessage = null;
+        });
+      }
+    });
   }
 
   Future<void> _showJamSyncDialog() async {
@@ -848,8 +855,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF282832) : const Color(0xFFE2E7F0),
-        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : const Color(0xFFCBD2DC))),
+        color: isDark ? const Color(0xFF282832) : const Color(0xFFE2E8F0),
+        border: Border(bottom: BorderSide(color: isDark ? const Color(0xFF383846) : const Color(0xFFCBD5E1))),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -976,11 +983,16 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
-    final bannerBg = theme.colorScheme.primaryContainer.withValues(alpha: 0.7);
+    final bannerBg = isDark
+        ? const Color(0xFF1E1B2E)
+        : const Color(0xFFEEF2FF);
     final bannerBorder = Border.all(
-      color: theme.colorScheme.primary,
+      color: const Color(0xFF6366F1),
       width: 1.5,
     );
+    final bannerTextColor = isDark
+        ? Colors.white
+        : const Color(0xFF312E81);
     final badgeBg = isDark
         ? theme.colorScheme.surface.withValues(alpha: 0.6)
         : Colors.white.withValues(alpha: 0.8);
@@ -1002,7 +1014,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           Icon(
             Icons.movie_outlined,
             size: 20,
-            color: theme.colorScheme.onPrimaryContainer,
+            color: bannerTextColor,
           ),
           const SizedBox(width: 10),
           Text(
@@ -1011,7 +1023,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               fontSize: 14,
               fontWeight: FontWeight.w900,
               letterSpacing: 0.5,
-              color: theme.colorScheme.onPrimaryContainer,
+              color: bannerTextColor,
             ),
           ),
           if (widget.project.showChapter) ...[
@@ -1056,15 +1068,15 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: theme.colorScheme.primary,
+              color: const Color(0xFF4F46E5),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               '$sceneTakeCount ${sceneTakeCount == 1 ? 'toma' : 'tomas'}',
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
-                color: theme.colorScheme.onPrimary,
+                color: Colors.white,
               ),
             ),
           ),
@@ -1112,19 +1124,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
     final cardColor = isDark
         ? (isEven ? const Color(0xFF16161B) : const Color(0xFF2C2C36))
-        : (isEven ? Colors.white : const Color(0xFFDFE4ED));
+        : (isEven ? Colors.white : const Color(0xFFF8FAFC));
 
     final cardBorderColor = isDark
         ? (isEven ? const Color(0xFF282832) : const Color(0xFF424250))
-        : (isEven ? const Color(0xFFCBD2DC) : const Color(0xFFB0B9C7));
+        : const Color(0xFFCBD5E1);
 
     final tier2Color = isDark
         ? (isEven ? const Color(0xFF101014) : const Color(0xFF22222A))
-        : (isEven ? const Color(0xFFF1F3F7) : const Color(0xFFD3DAE5));
+        : (isEven ? const Color(0xFFF1F5F9) : const Color(0xFFE2E8F0));
 
     final tier2BorderColor = isDark
         ? (isEven ? const Color(0xFF1F1F26) : const Color(0xFF383844))
-        : (isEven ? const Color(0xFFCBD2DC) : const Color(0xFFB0B9C7));
+        : const Color(0xFFCBD5E1);
 
     final usePagesStyle = widget.settings.usePagesStyleLayout;
 
@@ -1137,6 +1149,15 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
           color: cardBorderColor,
           width: 1,
         ),
+        boxShadow: isDark
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 3,
+                  offset: const Offset(0, 1),
+                ),
+              ],
       ),
       padding: const EdgeInsets.all(8),
       child: Column(
@@ -1839,13 +1860,57 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
             ),
           ),
           // 4. Marcar Corte (Ctrl+K)
-          Tooltip(
-            message: 'Estampa el código de tiempo actual en TC Out de la última toma (Ctrl+K)',
-            child: ElevatedButton.icon(
-              onPressed: records.isEmpty ? null : _stampCutOnLastRecord,
-              icon: const Icon(Icons.stop_circle_outlined, size: 16),
-              label: const Text('Marcar Corte'),
-            ),
+          Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              Tooltip(
+                message: 'Estampa el código de tiempo actual en TC Out de la última toma (Ctrl+K)',
+                child: ElevatedButton.icon(
+                  onPressed: records.isEmpty ? null : _stampCutOnLastRecord,
+                  icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                  label: const Text('Marcar Corte'),
+                ),
+              ),
+              if (_cutFeedbackMessage != null)
+                Positioned(
+                  bottom: 42,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isDark ? Theme.of(context).colorScheme.primary : const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(6),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.35),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          size: 13,
+                          color: isDark ? const Color(0xFF181824) : const Color(0xFF4ADE80),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          _cutFeedbackMessage!,
+                          style: TextStyle(
+                            color: isDark ? const Color(0xFF181824) : Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
           // 5. Duplicar última toma (Ctrl+D)
           Tooltip(

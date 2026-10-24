@@ -680,6 +680,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     String projectTitle = _projectPath != null 
         ? _projectPath!.split(Platform.pathSeparator).last 
         : 'Proyecto Sin Título';
@@ -689,21 +690,37 @@ class _HomeScreenState extends State<HomeScreen> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: Text('Renombrata - $projectTitle'),
-          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          title: Text(
+            'Renombrata - $projectTitle',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+              color: isDark ? Colors.white : const Color(0xFF0F172A),
+            ),
+          ),
+          backgroundColor: isDark ? const Color(0xFF16161A) : Colors.white,
+          foregroundColor: isDark ? Colors.white : const Color(0xFF0F172A),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          shape: Border(
+            bottom: BorderSide(
+              color: isDark ? const Color(0xFF282832) : const Color(0xFFCBD5E1),
+              width: 1,
+            ),
+          ),
           actions: [
             ValueListenableBuilder<ThemeMode>(
               valueListenable: themeNotifier,
               builder: (context, currentMode, child) {
-                final isDark = currentMode == ThemeMode.dark;
+                final isCurrentDark = currentMode == ThemeMode.dark;
                 return IconButton(
-                  icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+                  icon: Icon(isCurrentDark ? Icons.light_mode : Icons.dark_mode),
                   tooltip: 'Cambiar modo oscuro / claro',
                   onPressed: () async {
-                    final newMode = isDark ? ThemeMode.light : ThemeMode.dark;
+                    final newMode = isCurrentDark ? ThemeMode.light : ThemeMode.dark;
                     themeNotifier.value = newMode;
                     final prefs = await SharedPreferences.getInstance();
-                    await prefs.setBool('is_dark_mode', !isDark);
+                    await prefs.setBool('is_dark_mode', !isCurrentDark);
                   },
                 );
               },
@@ -742,8 +759,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(width: 16),
           ],
-          bottom: const TabBar(
-            tabs: [
+          bottom: TabBar(
+            indicatorColor: const Color(0xFF6366F1),
+            labelColor: isDark ? Colors.white : const Color(0xFF4F46E5),
+            unselectedLabelColor: isDark ? const Color(0xFF8E8E9F) : const Color(0xFF64748B),
+            tabs: const [
               Tab(icon: Icon(Icons.edit_document), text: 'Bitácora Digital'),
               Tab(icon: Icon(Icons.sync), text: 'Renombrador de Medios'),
             ],

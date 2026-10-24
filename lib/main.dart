@@ -49,19 +49,32 @@ class RenombrataApp extends StatelessWidget {
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.light),
-            scaffoldBackgroundColor: const Color(0xFFE9EDF4),
-            cardColor: const Color(0xFFF7F8FA),
+            scaffoldBackgroundColor: const Color(0xFFF1F5F9),
+            cardColor: Colors.white,
+            cardTheme: CardThemeData(
+              color: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: Color(0xFFCBD5E1), width: 1),
+              ),
+            ),
             inputDecorationTheme: const InputDecorationTheme(
               filled: true,
               fillColor: Colors.white,
+              labelStyle: TextStyle(color: Color(0xFF475569), fontSize: 13),
+              hintStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
               border: OutlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFFBCC4D2)),
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF94A3B8)),
               ),
               enabledBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFFBCC4D2)),
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF94A3B8)),
               ),
               focusedBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: Colors.deepPurple, width: 1.5),
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF6366F1), width: 1.5),
               ),
             ),
             useMaterial3: true,
@@ -70,9 +83,31 @@ class RenombrataApp extends StatelessWidget {
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
             scaffoldBackgroundColor: const Color(0xFF131316),
             cardColor: const Color(0xFF1E1E24),
+            cardTheme: CardThemeData(
+              color: const Color(0xFF1E1E24),
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: Color(0xFF33333F), width: 1),
+              ),
+            ),
             inputDecorationTheme: const InputDecorationTheme(
               fillColor: Color(0xFF16161A),
               filled: true,
+              labelStyle: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+              hintStyle: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF383846)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF383846)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(6)),
+                borderSide: BorderSide(color: Color(0xFF818CF8), width: 1.5),
+              ),
             ),
             useMaterial3: true,
           ),

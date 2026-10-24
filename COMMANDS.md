@@ -142,3 +142,16 @@ Renombrata is packaged as a **100% self-contained desktop application** with zer
   - macOS Universal: `assets/bin/macos/mediainfo`
 * **Runtime Extraction**:
   The application automatically unpacks the appropriate executable to a persistent cache directory (`ApplicationSupportDirectory/renombrata_bin/`) upon first launch, sets execution permissions (`chmod +x` on macOS), and runs it silently in the background. No manual installation of MediaInfo or FFmpeg is needed.
+
+---
+
+## 7. Automated Desktop Field Releases (GitHub Actions)
+
+To commit all current changes, stamp a new version tag, push to GitHub, and automatically trigger the Windows (.zip) and macOS (.zip) release compilation pipelines simultaneously, copy and run this single command in PowerShell:
+
+```powershell
+git commit -am "release: update field build"; git tag v1.0.0-beta.2; git push origin main --tags
+```
+
+> [!TIP]
+> Replace v1.0.0-beta.2 with whatever version tag you want to release.

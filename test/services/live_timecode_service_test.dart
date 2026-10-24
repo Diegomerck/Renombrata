@@ -158,7 +158,13 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.widgetWithText(ElevatedButton, 'Marcar Corte'));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      // Floating confirmation badge appears
+      expect(find.text('TC Out: 16:45:20:00 (Toma 1)'), findsOneWidget);
+      // Fast-forward past the 2500ms auto-dismiss timer
+      await tester.pump(const Duration(milliseconds: 2500));
+      expect(find.text('TC Out: 16:45:20:00 (Toma 1)'), findsNothing);
+
       expect(currentProject.log.records.last.tcOut, '16:45:20:00');
       // Verify TC Out TextFormField in the UI actually updated
       expect(find.widgetWithText(TextFormField, '16:45:20:00'), findsWidgets);
