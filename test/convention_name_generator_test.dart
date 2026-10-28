@@ -89,5 +89,102 @@ void main() {
       );
       expect(result, 'TEST_010124_1_T1_Z999_2_D1_U1');
     });
+
+    test('generates GoPro convention with GPR1 reel and 2-digit clip padding', () {
+      final result = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        plane: '1',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        clipIndex: '2',
+        isGpr: true,
+      );
+      expect(result, 'TODTA_010124_10_1_T1_GPR1_D01_02_U1');
+    });
+
+    test('generates Driving Shot convention with DS unit override', () {
+      final result = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        isDs: true,
+      );
+      expect(result, 'TODTA_010124_10_T1_A001_D01_DS');
+    });
+
+    test('generates Drone (DR1) and Free Fly (NFF) conventions', () {
+      final drone = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        isDr: true,
+      );
+      expect(drone, 'TODTA_010124_10_T1_DR1_D01_U1');
+
+      final freeFly = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        isFf: true,
+      );
+      expect(freeFly, 'TODTA_010124_10_T1_NFF_D01_U1');
+    });
+
+    test('generates Toma Falsa (TF) take format', () {
+      final tf1 = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        isTf: true,
+      );
+      expect(tf1, 'TODTA_010124_10_TF1_A001_D01_U1');
+
+      final tfAlready = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: 'TF3',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        isTf: true,
+      );
+      expect(tfAlready, 'TODTA_010124_10_TF3_A001_D01_U1');
+    });
+
+    test('generates Proforma convention with % separator', () {
+      final proforma = ConventionNameGenerator.generate(
+        nomenclature: 'TODTA',
+        date: '010124',
+        scene: '10',
+        take: '1',
+        reel: 'A001',
+        day: 'D01',
+        unit: 'U1',
+        clipIndex: '5',
+        includeProforma: true,
+      );
+      expect(proforma, 'TODTA_010124_10_T1_A001_D01_5_U1%A001_5_D01_U1');
+    });
   });
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:renombrata/src/models/app_settings.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
@@ -285,18 +286,18 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify Dialog opens
-      expect(find.text('Configuración de Bitácora'), findsOneWidget);
+      expect(find.text('Configuración'), findsOneWidget);
       expect(find.text('Columnas y Campos Visibles'), findsOneWidget);
 
       // Uncheck Capítulo and TC Out inside Dialog
       final dialogFinder = find.byType(AlertDialog);
-      await tester.tap(find.descendant(of: dialogFinder, matching: find.text('Capítulo')));
+      await tester.tap(find.descendant(of: dialogFinder, matching: find.widgetWithText(CheckboxListTile, 'Capítulo')));
       await tester.pumpAndSettle();
-      await tester.tap(find.descendant(of: dialogFinder, matching: find.text('TC Out')));
+      await tester.tap(find.descendant(of: dialogFinder, matching: find.widgetWithText(CheckboxListTile, 'TC Out')));
       await tester.pumpAndSettle();
 
-      // Save Dialog
-      await tester.tap(find.descendant(of: dialogFinder, matching: find.widgetWithText(FilledButton, 'Guardar')));
+      // Close Dialog
+      await tester.tap(find.descendant(of: dialogFinder, matching: find.widgetWithText(ElevatedButton, 'Cerrar')));
       await tester.pumpAndSettle();
 
       // Verify updated flags on project
@@ -378,6 +379,410 @@ void main() {
 
       // Verify that text arrived in project state
       expect(currentProject.log.records.first.chapter, '101');
+    });
+
+    testWidgets('tapping scene header banner enables inline editing and synchronizes all takes in cluster on confirm', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+            ShotRecord(id: 'r2', chapter: '1', scene: '10', plane: '1', take: '2', cameras: [], reel: '001'),
+            ShotRecord(id: 'r3', chapter: '1', scene: '10', plane: '1', take: '3', cameras: [], reel: '001'),
+            ShotRecord(id: 'r4', chapter: '1', scene: '11', plane: 'A', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        showChapter: true,
+        showPlane: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Tap on the Scene 10 banner
+      final banner = find.text('ESCENA 10');
+      expect(banner, findsOneWidget);
+      await tester.tap(banner);
+      await tester.pumpAndSettle();
+
+      // Verify inline editing mode activated (check and cancel icon buttons appear)
+      expect(find.byIcon(Icons.check), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsOneWidget);
+
+      // Change Scene to '15', Chapter to '2', Plane to 'B'
+      final capField = find.byKey(const ValueKey('inline_banner_cap'));
+      final sceneField = find.byKey(const ValueKey('inline_banner_scene'));
+      final planeField = find.byKey(const ValueKey('inline_banner_plane'));
+
+      expect(capField, findsOneWidget);
+      expect(sceneField, findsOneWidget);
+      expect(planeField, findsOneWidget);
+
+      await tester.enterText(capField, '2');
+      await tester.enterText(sceneField, '15');
+      await tester.enterText(planeField, 'B');
+      await tester.pumpAndSettle();
+
+      // Tap confirmation check button
+      await tester.tap(find.byIcon(Icons.check));
+      await tester.pumpAndSettle();
+
+      // Check that all 3 takes in cluster 1 were synchronized
+      expect(currentProject.log.records[0].chapter, '2');
+      expect(currentProject.log.records[0].scene, '15');
+      expect(currentProject.log.records[0].plane, 'B');
+      expect(currentProject.log.records[0].take, '1');
+
+      expect(currentProject.log.records[1].chapter, '2');
+      expect(currentProject.log.records[1].scene, '15');
+      expect(currentProject.log.records[1].plane, 'B');
+      expect(currentProject.log.records[1].take, '2');
+
+      expect(currentProject.log.records[2].chapter, '2');
+      expect(currentProject.log.records[2].scene, '15');
+      expect(currentProject.log.records[2].plane, 'B');
+      expect(currentProject.log.records[2].take, '3');
+
+      // Check that r4 was untouched
+      expect(currentProject.log.records[3].chapter, '1');
+      expect(currentProject.log.records[3].scene, '11');
+      expect(currentProject.log.records[3].plane, 'A');
+      expect(currentProject.log.records[3].take, '1');
+
+      // Verify inline editing closed and regular banner is displayed with updated values
+      expect(find.byIcon(Icons.check), findsNothing);
+      expect(find.text('ESCENA 15'), findsOneWidget);
+    });
+
+    testWidgets('editing setup field in Tier 2 of an individual take synchronizes other takes in cluster', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+            ShotRecord(id: 'r2', chapter: '1', scene: '10', plane: '1', take: '2', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        showChapter: true,
+        showPlane: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Expand Tier 2 on r1
+      final expandBtn = find.byTooltip('Expandir notas').first;
+      await tester.tap(expandBtn);
+      await tester.pumpAndSettle();
+
+      // Edit scene in Tier 2 of r1
+      final tier2SceneField = find.byKey(const ValueKey('r1_tier2_scene'));
+      expect(tier2SceneField, findsOneWidget);
+      await tester.enterText(tier2SceneField, '25');
+      await tester.pumpAndSettle();
+
+      // Both r1 and r2 should now have scene '25'
+      expect(currentProject.log.records[0].scene, '25');
+      expect(currentProject.log.records[1].scene, '25');
+
+      // Edit take (toma) of r1 - it must NOT propagate to r2
+      final takeField = find.byKey(const ValueKey('r1_take'));
+      expect(takeField, findsOneWidget);
+      await tester.enterText(takeField, '99');
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records[0].take, '99');
+      expect(currentProject.log.records[1].take, '2');
+    });
+
+    testWidgets('renders DS, FF, GPR checkboxes in Tier 2 and toggling updates record', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        showDs: true,
+        showFf: true,
+        showGpr: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Expand Tier 2
+      final expandBtn = find.byTooltip('Expandir notas').first;
+      await tester.tap(expandBtn);
+      await tester.pumpAndSettle();
+
+      // Verify labels DS, FF, GPR are present in Tier 2
+      expect(find.text('DS'), findsOneWidget);
+      expect(find.text('FF'), findsOneWidget);
+      expect(find.text('GPR'), findsOneWidget);
+
+      // Tap DS label/checkbox
+      await tester.tap(find.text('DS'));
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records[0].isDs, isTrue);
+      expect(currentProject.log.records[0].isFf, isFalse);
+      expect(currentProject.log.records[0].isGpr, isFalse);
+    });
+
+    testWidgets('renders DR and TF checkboxes in Tier 2 and toggles them', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        showDr: true,
+        showTf: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Expand Tier 2
+      final expandBtn = find.byTooltip('Expandir notas').first;
+      await tester.tap(expandBtn);
+      await tester.pumpAndSettle();
+
+      // Verify labels DR and TF are present in Tier 2
+      expect(find.text('DR'), findsOneWidget);
+      expect(find.text('TF'), findsOneWidget);
+
+      // Tap DR
+      await tester.tap(find.text('DR'));
+      await tester.pumpAndSettle();
+      expect(currentProject.log.records[0].isDr, isTrue);
+
+      // Tap TF
+      await tester.tap(find.text('TF'));
+      await tester.pumpAndSettle();
+      expect(currentProject.log.records[0].isTf, isTrue);
+    });
+
+    testWidgets('applies bitacoraElementOrder dynamically to banner and grid headers', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final project = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        bitacoraElementOrder: ['escena', 'plano', 'capitulo', 'toma'],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BitacoraEditorTab(
+              project: project,
+              settings: const AppSettings(usePagesStyleLayout: false),
+              onProjectChanged: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // In non-pages mode, find header texts: 'Escena', 'Plano', 'Cap', 'Toma'
+      final escenaPos = tester.getTopLeft(find.text('Escena').first).dx;
+      final planoPos = tester.getTopLeft(find.text('Plano').first).dx;
+      final capPos = tester.getTopLeft(find.text('Cap').first).dx;
+      final tomaPos = tester.getTopLeft(find.text('Toma').first).dx;
+
+      // Verify the horizontal order matches ['escena', 'plano', 'capitulo', 'toma']
+      expect(escenaPos < planoPos, isTrue, reason: 'Escena should be left of Plano');
+      expect(planoPos < capPos, isTrue, reason: 'Plano should be left of Cap');
+      expect(capPos < tomaPos, isTrue, reason: 'Cap should be left of Toma');
+    });
+
+    testWidgets('HardwareKeyboard handler triggers shortcuts reliably', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+      );
+
+      bool saveCalled = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                  onSaveProject: () => saveCalled = true,
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 1);
+
+      // Press Ctrl+N to add new record
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyN);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyN);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 2);
+
+      // Press Ctrl+D to duplicate last record
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyD);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyD);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 3);
+
+      // Press Ctrl+S to save
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyS);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyS);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      expect(saveCalled, isTrue);
     });
   });
 }

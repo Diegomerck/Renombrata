@@ -12,7 +12,14 @@ class RenombrataProject {
   final bool showChapter;
   final bool showPlane;
   final bool showMos;
+  final bool showDs;
+  final bool showFf;
+  final bool showGpr;
+  final bool showDr;
+  final bool showTf;
   final bool showTcOut;
+  final List<String> bitacoraElementOrder;
+  final List<String> conventionNameOrder;
 
   RenombrataProject({
     this.version = "2.0",
@@ -25,7 +32,14 @@ class RenombrataProject {
     this.showChapter = true,
     this.showPlane = true,
     this.showMos = true,
+    this.showDs = true,
+    this.showFf = true,
+    this.showGpr = true,
+    this.showDr = true,
+    this.showTf = true,
     this.showTcOut = true,
+    this.bitacoraElementOrder = const ['capitulo', 'escena', 'plano', 'toma'],
+    this.conventionNameOrder = const ['capitulo', 'escena', 'plano', 'toma'],
   }) : lastModified = lastModified ?? DateTime.now().toUtc().toIso8601String();
 
   RenombrataProject copyWith({
@@ -39,7 +53,14 @@ class RenombrataProject {
     bool? showChapter,
     bool? showPlane,
     bool? showMos,
+    bool? showDs,
+    bool? showFf,
+    bool? showGpr,
+    bool? showDr,
+    bool? showTf,
     bool? showTcOut,
+    List<String>? bitacoraElementOrder,
+    List<String>? conventionNameOrder,
   }) {
     return RenombrataProject(
       version: version ?? this.version,
@@ -52,7 +73,14 @@ class RenombrataProject {
       showChapter: showChapter ?? this.showChapter,
       showPlane: showPlane ?? this.showPlane,
       showMos: showMos ?? this.showMos,
+      showDs: showDs ?? this.showDs,
+      showFf: showFf ?? this.showFf,
+      showGpr: showGpr ?? this.showGpr,
+      showDr: showDr ?? this.showDr,
+      showTf: showTf ?? this.showTf,
       showTcOut: showTcOut ?? this.showTcOut,
+      bitacoraElementOrder: bitacoraElementOrder ?? this.bitacoraElementOrder,
+      conventionNameOrder: conventionNameOrder ?? this.conventionNameOrder,
     );
   }
 
@@ -67,7 +95,14 @@ class RenombrataProject {
     'showChapter': showChapter,
     'showPlane': showPlane,
     'showMos': showMos,
+    'showDs': showDs,
+    'showFf': showFf,
+    'showGpr': showGpr,
+    'showDr': showDr,
+    'showTf': showTf,
     'showTcOut': showTcOut,
+    'bitacoraElementOrder': bitacoraElementOrder,
+    'conventionNameOrder': conventionNameOrder,
     'records': log.records.map((r) => r.toJson()).toList(),
   };
 
@@ -90,7 +125,14 @@ class RenombrataProject {
       showChapter: json['showChapter'] as bool? ?? true,
       showPlane: json['showPlane'] as bool? ?? true,
       showMos: json['showMos'] as bool? ?? true,
+      showDs: json['showDs'] as bool? ?? true,
+      showFf: json['showFf'] as bool? ?? true,
+      showGpr: json['showGpr'] as bool? ?? true,
+      showDr: json['showDr'] as bool? ?? true,
+      showTf: json['showTf'] as bool? ?? true,
       showTcOut: json['showTcOut'] as bool? ?? true,
+      bitacoraElementOrder: (json['bitacoraElementOrder'] as List<dynamic>?)?.map((e) => e as String).toList() ?? const ['capitulo', 'escena', 'plano', 'toma'],
+      conventionNameOrder: (json['conventionNameOrder'] as List<dynamic>?)?.map((e) => e as String).toList() ?? const ['capitulo', 'escena', 'plano', 'toma'],
     );
   }
 }

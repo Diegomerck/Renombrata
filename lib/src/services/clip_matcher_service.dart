@@ -27,7 +27,7 @@ class ClipMatcherService {
   static String extractClipNumber(String filename) {
     String baseName = p.basenameWithoutExtension(filename);
     
-    final priorityMatch = RegExp(r'[cC](\d{3,4})').firstMatch(baseName);
+    final priorityMatch = RegExp(r'[cC](\d{1,4})').firstMatch(baseName);
     if (priorityMatch != null) {
       int num = int.parse(priorityMatch.group(1)!);
       return num.toString().padLeft(3, '0');
@@ -40,6 +40,19 @@ class ClipMatcherService {
     }
 
     return '';
+  }
+
+  /// Normalizes any clip string ("1", "01", "001", "0001", "C001") into
+  /// a 3-digit padded number string (e.g. "001").
+  static String normalizeClipNumber(String clipNum) {
+    final clean = clipNum.trim();
+    if (clean.isEmpty) return '';
+    final stripped = clean.replaceFirst(RegExp(r'^[cC]'), '');
+    final parsed = int.tryParse(stripped);
+    if (parsed != null) {
+      return parsed.toString().padLeft(3, '0');
+    }
+    return extractClipNumber(clean);
   }
 
   static SidecarMetadata? _extractSidecar(ScannedFile? companion, [Map<String, String>? testContents]) {
@@ -105,8 +118,10 @@ class ClipMatcherService {
     for (var record in log.records) {
       for (var cam in record.cameras) {
         if (cam.cameraName.toUpperCase() == targetCamera.toUpperCase()) {
-          // If we have multiple records with the same clip number for the same camera, that's a conflict
-          expectedClips[cam.clipName] = record;
+          final reel = record.reel.trim().toUpperCase();
+          final normClip = normalizeClipNumber(cam.clipName);
+          final key = '${reel}_$normClip';
+          expectedClips[key] = record;
         }
       }
     }
@@ -170,6 +185,12 @@ class ClipMatcherService {
         final targetRecordId = manualOverrides[scanned.path];
         final fileReel = extractReel(scanned.basename);
 
+        final isAlt = targetRecordId != null && (targetRecordId == '__ALT__' || targetRecordId.startsWith('__ALT__:'));
+        final isPrimary = targetRecordId == '__PRIMARY__';
+        final effectiveRecordId = (targetRecordId != null && targetRecordId.startsWith('__ALT__:'))
+            ? targetRecordId.substring('__ALT__:'.length)
+            : targetRecordId;
+
         if (targetRecordId == null) {
           var companion = _findCompanionXml(scanned, xmlFiles);
           final sidecar = _extractSidecar(companion, xmlContentsForTesting);
@@ -182,20 +203,34 @@ class ClipMatcherService {
             fileReel: fileReel,
           ));
         } else {
-          final record = log.records.where((r) => r.id == targetRecordId).firstOrNull;
-          if (record != null) {
-            String proposedBase = ConventionNameGenerator.generate(
-              nomenclature: log.metadata.nomenclature,
-              date: log.metadata.date,
-              scene: record.scene,
-              plane: record.plane,
-              take: record.take,
-              reel: record.reel,
-              day: log.metadata.day,
-              unit: log.metadata.unit,
-              activeCamera: targetCamera,
-              reelOverride: reelOverride,
-            );
+          final record = log.records.where((r) => r.id == effectiveRecordId).firstOrNull;
+          if (record != null || isPrimary || isAlt) {
+            String proposedBase;
+            if (record != null) {
+              proposedBase = ConventionNameGenerator.generate(
+                nomenclature: log.metadata.nomenclature,
+                date: log.metadata.date,
+                scene: record.scene,
+                plane: record.plane,
+                take: record.take,
+                reel: record.reel,
+                day: log.metadata.day,
+                unit: log.metadata.unit,
+                activeCamera: targetCamera,
+                reelOverride: reelOverride,
+              );
+              if (isAlt) {
+                proposedBase = '${proposedBase}_ALT';
+              }
+              expectedClips.removeWhere((clipName, r) => r.id == record.id);
+            } else {
+              String base = p.basenameWithoutExtension(scanned.path);
+              if (base.endsWith('_ALT')) {
+                base = base.substring(0, base.length - 4);
+              }
+              proposedBase = isAlt ? '${base}_ALT' : base;
+            }
+
             String ext = scanned.extension.toUpperCase();
             var companion = _findCompanionXml(scanned, xmlFiles);
             final sidecar = _extractSidecar(companion, xmlContentsForTesting);
@@ -224,8 +259,6 @@ class ClipMatcherService {
               ));
               xmlFiles.remove(companion);
             }
-
-            expectedClips.removeWhere((clipName, r) => r.id == record.id);
           } else {
             var companion = _findCompanionXml(scanned, xmlFiles);
             final sidecar = _extractSidecar(companion, xmlContentsForTesting);
@@ -257,8 +290,11 @@ class ClipMatcherService {
       }
 
       String clipNum = extractClipNumber(video.basename);
-      if (clipNum.isNotEmpty) {
-        filesByClip.putIfAbsent(clipNum, () => []).add(video);
+      final normKey = normalizeClipNumber(clipNum);
+      if (normKey.isNotEmpty) {
+        final effectiveFileReel = (fileReel ?? targetCamera).trim().toUpperCase();
+        final key = '${effectiveFileReel}_$normKey';
+        filesByClip.putIfAbsent(key, () => []).add(video);
       } else {
         var companion = _findCompanionXml(video, xmlFiles);
         final sidecar = _extractSidecar(companion, xmlContentsForTesting);
@@ -273,8 +309,41 @@ class ClipMatcherService {
       }
     }
 
-    expectedClips.forEach((clipName, record) {
-      var matchedVideos = filesByClip[clipName];
+    expectedClips.forEach((clipKey, record) {
+      final cam = record.cameras.firstWhere(
+        (c) => c.cameraName.toUpperCase() == targetCamera.toUpperCase(),
+        orElse: () => CameraTakeRecord(cameraName: targetCamera, clipName: ''),
+      );
+      final normClip = normalizeClipNumber(cam.clipName);
+      final exactKey = '${record.reel.trim().toUpperCase()}_$normClip';
+      String matchedKey = exactKey;
+      var matchedVideos = filesByClip[exactKey];
+      if (matchedVideos == null || matchedVideos.isEmpty) {
+        final fallbackKey = '${targetCamera.trim().toUpperCase()}_$normClip';
+        if (filesByClip.containsKey(fallbackKey)) {
+          matchedVideos = filesByClip[fallbackKey];
+          matchedKey = fallbackKey;
+        }
+      }
+      if (matchedVideos == null || matchedVideos.isEmpty) {
+        final prefixedKey = '${targetCamera.trim().toUpperCase()}${record.reel.trim().toUpperCase()}_$normClip';
+        if (filesByClip.containsKey(prefixedKey)) {
+          matchedVideos = filesByClip[prefixedKey];
+          matchedKey = prefixedKey;
+        }
+      }
+      if (matchedVideos == null || matchedVideos.isEmpty) {
+        for (final entry in filesByClip.entries) {
+          if (entry.key.endsWith('_$normClip')) {
+            // Only consider this candidate if its key is NOT claimed by another expected record
+            if (!expectedClips.containsKey(entry.key)) {
+              matchedVideos = entry.value;
+              matchedKey = entry.key;
+              break;
+            }
+          }
+        }
+      }
       
       String proposedBase = ConventionNameGenerator.generate(
         nomenclature: log.metadata.nomenclature,
@@ -335,7 +404,7 @@ class ClipMatcherService {
           xmlFiles.remove(companion);
         }
 
-        filesByClip.remove(clipName);
+        filesByClip.remove(matchedKey);
       } else {
         for (var video in matchedVideos) {
           final fileReel = extractReel(video.basename);
@@ -351,11 +420,12 @@ class ClipMatcherService {
             fileReel: fileReel,
           ));
         }
-        filesByClip.remove(clipName);
+        filesByClip.remove(matchedKey);
       }
     });
 
     filesByClip.forEach((clipName, videos) {
+      final isConflict = videos.length > 1;
       for (var video in videos) {
         final fileReel = extractReel(video.basename);
         var companion = _findCompanionXml(video, xmlFiles);
@@ -363,7 +433,7 @@ class ClipMatcherService {
         proposals.add(RenameProposal(
           originalFilePath: video.path,
           proposedFileName: video.basename,
-          status: ProposalStatus.unmatchedClip,
+          status: isConflict ? ProposalStatus.conflict : ProposalStatus.unmatchedClip,
           fileTcIn: sidecar?.tcIn,
           fileTcOut: sidecar?.tcOut,
           fileReel: fileReel,

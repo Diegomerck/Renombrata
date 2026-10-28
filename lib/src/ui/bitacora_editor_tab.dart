@@ -7,13 +7,17 @@ import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/services/clip_matcher_service.dart';
 import 'package:renombrata/src/services/live_timecode_service.dart';
+import 'package:renombrata/src/utils/shortcut_utils.dart';
 import 'package:renombrata/src/utils/timecode_formatter.dart';
 import 'package:uuid/uuid.dart';
+import 'settings_dialog.dart';
 
 class BitacoraEditorTab extends StatefulWidget {
   final RenombrataProject project;
   final ValueChanged<RenombrataProject> onProjectChanged;
   final AppSettings settings;
+  final ValueChanged<AppSettings>? onSettingsChanged;
+  final VoidCallback? onSaveProject;
   final LiveTimecodeService? timecodeService;
 
   const BitacoraEditorTab({
@@ -21,6 +25,8 @@ class BitacoraEditorTab extends StatefulWidget {
     required this.project,
     required this.onProjectChanged,
     this.settings = const AppSettings(),
+    this.onSettingsChanged,
+    this.onSaveProject,
     this.timecodeService,
   });
 
@@ -70,6 +76,10 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   FocusNode? _activeAutofocusNode;
   String? _cutFeedbackMessage;
   Timer? _cutFeedbackTimer;
+  int? _editingClusterStartIndex;
+  late TextEditingController _inlineCapController;
+  late TextEditingController _inlineSceneController;
+  late TextEditingController _inlinePlaneController;
 
   final ScrollController _scrollController = ScrollController();
 
@@ -92,6 +102,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   @override
   void initState() {
     super.initState();
+    HardwareKeyboard.instance.addHandler(_handleGlobalKey);
     if (widget.timecodeService != null) {
       _timecodeService = widget.timecodeService!;
       _ownsTimecodeService = false;
@@ -115,6 +126,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     _frameRateController = TextEditingController(text: meta.frameRate);
     _videoCodecController = TextEditingController(text: meta.videoCodec);
     _audioFormatController = TextEditingController(text: meta.audioFormat);
+    _inlineCapController = TextEditingController();
+    _inlineSceneController = TextEditingController();
+    _inlinePlaneController = TextEditingController();
   }
 
   @override
@@ -129,6 +143,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       _lastDeletedRecords = null;
       _expandedRecordIds.clear();
       _selectedRecordIds.clear();
+      _editingClusterStartIndex = null;
     }
 
     final meta = widget.project.log.metadata;
@@ -154,6 +169,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
     _cutFeedbackTimer?.cancel();
     _activeAutofocusNode?.dispose();
     if (_ownsTimecodeService) {
@@ -172,7 +188,63 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     _frameRateController.dispose();
     _videoCodecController.dispose();
     _audioFormatController.dispose();
+    _inlineCapController.dispose();
+    _inlineSceneController.dispose();
+    _inlinePlaneController.dispose();
     super.dispose();
+  }
+
+  bool _handleGlobalKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    if (!mounted) return false;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return false;
+
+    final hasRecords = widget.project.log.records.isNotEmpty;
+    final hasDeleted = _lastDeletedRecords != null && _lastDeletedRecords!.isNotEmpty;
+
+    if (_matchesShortcut('new_take', event)) {
+      _addNewRecord();
+      return true;
+    }
+    if (_matchesShortcut('stamp_cut', event)) {
+      if (hasRecords) {
+        _stampCutOnLastRecord();
+      }
+      return true;
+    }
+    if (_matchesShortcut('duplicate_take', event)) {
+      if (hasRecords) {
+        _duplicateLastRecord();
+      }
+      return true;
+    }
+    if (_matchesShortcut('undo_delete', event)) {
+      if (hasDeleted) {
+        _undoLastDeletion();
+      }
+      return true;
+    }
+    if (_matchesShortcut('save_project', event)) {
+      if (widget.onSaveProject != null) {
+        widget.onSaveProject!();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  bool _matchesShortcut(String actionKey, KeyEvent event) {
+    final shortcutStr = widget.settings.shortcuts[actionKey] ?? AppSettings.defaultShortcuts[actionKey];
+    if (shortcutStr == null || shortcutStr.isEmpty) return false;
+    final activators = ShortcutUtils.parseActivators(shortcutStr);
+    for (final activator in activators) {
+      if (activator.accepts(event, HardwareKeyboard.instance)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _deleteSingleRecord(int index, ShotRecord record) async {
@@ -260,6 +332,25 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     widget.onProjectChanged(widget.project.copyWith(log: updatedLog));
   }
 
+  void _updateSetupForCluster(
+    int startIndex,
+    int count, {
+    required String chapter,
+    required String scene,
+    required String plane,
+  }) {
+    final allRecords = List<ShotRecord>.from(widget.project.log.records);
+    final endIndex = (startIndex + count).clamp(0, allRecords.length);
+    for (int i = startIndex; i < endIndex; i++) {
+      allRecords[i] = allRecords[i].copyWith(
+        chapter: chapter,
+        scene: scene,
+        plane: plane,
+      );
+    }
+    _updateRecords(allRecords);
+  }
+
   void _reorderRecordsByClip() {
     final sorted = BitacoraEditorTab.sortRecordsByClip(
       widget.project.log.records,
@@ -289,50 +380,16 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
 
   @override
   Widget build(BuildContext context) {
-    final records = widget.project.log.records;
-    final hasRecords = records.isNotEmpty;
-    final hasDeleted = _lastDeletedRecords != null && _lastDeletedRecords!.isNotEmpty;
-
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.keyN, control: true): _addNewRecord,
-        const SingleActivator(LogicalKeyboardKey.keyN, meta: true): _addNewRecord,
-        const SingleActivator(LogicalKeyboardKey.keyD, control: true): () {
-          if (hasRecords) _duplicateLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyD, meta: true): () {
-          if (hasRecords) _duplicateLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () {
-          if (hasRecords) _stampCutOnLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () {
-          if (hasRecords) _stampCutOnLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyO, control: true): () {
-          if (hasRecords) _stampCutOnLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyO, meta: true): () {
-          if (hasRecords) _stampCutOnLastRecord();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () {
-          if (hasDeleted) _undoLastDeletion();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () {
-          if (hasDeleted) _undoLastDeletion();
-        },
-      },
-      child: Focus(
-        autofocus: _activeAutofocusNode == null,
-        child: Column(
-          children: [
-            _buildHeaderCard(),
-            Expanded(
-              child: _buildDataGrid(),
-            ),
-            _buildFooterActions(),
-          ],
-        ),
+    return Focus(
+      autofocus: _activeAutofocusNode == null,
+      child: Column(
+        children: [
+          _buildHeaderCard(),
+          Expanded(
+            child: _buildDataGrid(),
+          ),
+          _buildFooterActions(),
+        ],
       ),
     );
   }
@@ -740,11 +797,11 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       );
     }
 
-    final usePagesStyle = widget.settings.usePagesStyleLayout;
-
     // Precompute scene cluster boundaries and counts in a single O(N) pass
     final List<bool> isNewSceneList = List<bool>.filled(records.length, false);
     final List<int> sceneTakeCounts = List<int>.filled(records.length, 0);
+    final List<int> clusterStartIndices = List<int>.filled(records.length, 0);
+    final List<int> clusterCounts = List<int>.filled(records.length, 1);
 
     if (records.isNotEmpty) {
       int currentClusterStartIndex = 0;
@@ -778,8 +835,13 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         } else {
           currentClusterCount++;
         }
+        clusterStartIndices[i] = currentClusterStartIndex;
       }
       sceneTakeCounts[currentClusterStartIndex] = currentClusterCount;
+
+      for (int i = 0; i < records.length; i++) {
+        clusterCounts[i] = sceneTakeCounts[clusterStartIndices[i]];
+      }
     }
 
     return Card(
@@ -821,6 +883,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                         records[index],
                         isNewScene: isNewSceneList[index],
                         sceneTakeCount: sceneTakeCounts[index],
+                        clusterStartIndex: clusterStartIndices[index],
+                        clusterCount: clusterCounts[index],
                       );
                     },
                   ),
@@ -866,24 +930,82 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
             const SizedBox(width: 8),
           ],
           const SizedBox(width: 20),
-          const SizedBox(width: 32, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(
+            width: 32, 
+            child: Center(
+              child: Text(
+                '#', 
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
           const SizedBox(width: 8),
           if (!usePagesStyle) ...[
-            if (widget.project.showChapter) ...[
-              const SizedBox(width: 55, child: Text('Cap', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
+            for (final elem in widget.project.bitacoraElementOrder) ...[
+              if (elem == 'capitulo' && widget.project.showChapter) ...[
+                const SizedBox(
+                  width: 55, 
+                  child: Center(
+                    child: Text(
+                      'Cap', 
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (elem == 'escena') ...[
+                const SizedBox(
+                  width: 130, 
+                  child: Center(
+                    child: Text(
+                      'Escena', 
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (elem == 'plano' && widget.project.showPlane) ...[
+                const SizedBox(
+                  width: 55, 
+                  child: Center(
+                    child: Text(
+                      'Plano', 
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (elem == 'toma') ...[
+                const SizedBox(
+                  width: 60, 
+                  child: Center(
+                    child: Text(
+                      'Toma', 
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
             ],
-            const SizedBox(width: 130, child: Text('Escena', style: TextStyle(fontWeight: FontWeight.bold))),
-            const SizedBox(width: 8),
-            if (widget.project.showPlane) ...[
-              const SizedBox(width: 55, child: Text('Plano', style: TextStyle(fontWeight: FontWeight.bold))),
-              const SizedBox(width: 8),
-            ],
-            const SizedBox(width: 60, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
           ] else ...[
-            const SizedBox(width: 60, child: Text('Toma', style: TextStyle(fontWeight: FontWeight.bold))),
+            const SizedBox(
+              width: 60, 
+              child: Center(
+                child: Text(
+                  'Toma', 
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
           ],
-          const SizedBox(width: 8),
           for (var cam in widget.project.cameraNames)
             Padding(
               padding: const EdgeInsets.only(right: 8.0),
@@ -891,20 +1013,57 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 width: 80, 
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const Text('Clip Cam', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 10)),
-                    Text('"$cam"', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13), overflow: TextOverflow.ellipsis),
+                    const Text(
+                      'Clip Cam', 
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.w500, fontSize: 10),
+                    ),
+                    Text(
+                      '"$cam"', 
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13), 
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ],
                 ),
               ),
             ),
-          const SizedBox(width: 75, child: Text('Reel', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(
+            width: 75, 
+            child: Center(
+              child: Text(
+                'Reel', 
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
           const SizedBox(width: 8),
-          const SizedBox(width: 110, child: Text('TC In', style: TextStyle(fontWeight: FontWeight.bold))),
+          const SizedBox(
+            width: 110, 
+            child: Center(
+              child: Text(
+                'TC In', 
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
           if (widget.project.showTcOut) ...[
             const SizedBox(width: 8),
-            const SizedBox(width: 110, child: Text('TC Out', style: TextStyle(fontWeight: FontWeight.bold))),
+            const SizedBox(
+              width: 110, 
+              child: Center(
+                child: Text(
+                  'TC Out', 
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
           ],
           const SizedBox(width: 8),
           const Spacer(),
@@ -979,7 +1138,26 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     );
   }
 
-  Widget _buildSceneHeaderBanner(ShotRecord record, int sceneTakeCount) {
+  void _confirmInlineEdit(int startIndex, int count) {
+    _updateSetupForCluster(
+      startIndex,
+      count,
+      chapter: _inlineCapController.text.trim(),
+      scene: _inlineSceneController.text.trim(),
+      plane: _inlinePlaneController.text.trim(),
+    );
+    setState(() {
+      _editingClusterStartIndex = null;
+    });
+  }
+
+  void _cancelInlineEdit() {
+    setState(() {
+      _editingClusterStartIndex = null;
+    });
+  }
+
+  Widget _buildSceneHeaderBanner(ShotRecord record, int sceneTakeCount, int startIndex) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
@@ -1001,86 +1179,230 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       width: 1,
     );
 
+    final isEditing = _editingClusterStartIndex == startIndex;
+
+    if (isEditing) {
+      return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: bannerBg,
+          borderRadius: BorderRadius.circular(8),
+          border: bannerBorder,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.edit_note,
+              size: 20,
+              color: bannerTextColor,
+            ),
+            const SizedBox(width: 8),
+            for (final elem in widget.project.bitacoraElementOrder) ...[
+              if (elem == 'capitulo' && widget.project.showChapter) ...[
+                SizedBox(
+                  width: 70,
+                  height: 32,
+                  child: TextField(
+                    key: const ValueKey('inline_banner_cap'),
+                    controller: _inlineCapController,
+                    decoration: const InputDecoration(
+                      labelText: 'Cap',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      border: OutlineInputBorder(),
+                    ),
+                    style: const TextStyle(fontSize: 12),
+                    onSubmitted: (_) => _confirmInlineEdit(startIndex, sceneTakeCount),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (elem == 'escena') ...[
+                SizedBox(
+                  width: 130,
+                  height: 32,
+                  child: TextField(
+                    key: const ValueKey('inline_banner_scene'),
+                    controller: _inlineSceneController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Escena',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      border: OutlineInputBorder(),
+                    ),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    onSubmitted: (_) => _confirmInlineEdit(startIndex, sceneTakeCount),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (elem == 'plano' && widget.project.showPlane) ...[
+                SizedBox(
+                  width: 70,
+                  height: 32,
+                  child: TextField(
+                    key: const ValueKey('inline_banner_plane'),
+                    controller: _inlinePlaneController,
+                    decoration: const InputDecoration(
+                      labelText: 'Plano',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      border: OutlineInputBorder(),
+                    ),
+                    style: const TextStyle(fontSize: 12),
+                    onSubmitted: (_) => _confirmInlineEdit(startIndex, sceneTakeCount),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ],
+            IconButton(
+              icon: const Icon(Icons.check, size: 20, color: Colors.green),
+              tooltip: 'Guardar cambios del grupo',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              splashRadius: 18,
+              onPressed: () => _confirmInlineEdit(startIndex, sceneTakeCount),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, size: 20, color: Colors.redAccent),
+              tooltip: 'Cancelar',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              splashRadius: 18,
+              onPressed: _cancelInlineEdit,
+            ),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF4F46E5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '$sceneTakeCount ${sceneTakeCount == 1 ? 'toma' : 'tomas'}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       decoration: BoxDecoration(
         color: bannerBg,
         borderRadius: BorderRadius.circular(8),
         border: bannerBorder,
       ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.movie_outlined,
-            size: 20,
-            color: bannerTextColor,
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'ESCENA ${record.scene.isNotEmpty ? record.scene : 'S/E'}',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.5,
-              color: bannerTextColor,
-            ),
-          ),
-          if (widget.project.showChapter) ...[
-            const SizedBox(width: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: badgeBg,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.fromBorderSide(badgeBorder),
-              ),
-              child: Text(
-                'CAP: ${record.chapter.isNotEmpty ? record.chapter : '—'}',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: theme.colorScheme.onSurface,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          mouseCursor: SystemMouseCursors.click,
+          onTap: () {
+            setState(() {
+              _editingClusterStartIndex = startIndex;
+              _inlineCapController.text = record.chapter;
+              _inlineSceneController.text = record.scene;
+              _inlinePlaneController.text = record.plane ?? '';
+            });
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.movie_outlined,
+                  size: 20,
+                  color: bannerTextColor,
                 ),
-              ),
-            ),
-          ],
-          if (widget.project.showPlane) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: badgeBg,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.fromBorderSide(badgeBorder),
-              ),
-              child: Text(
-                'PLANO: ${(record.plane != null && record.plane!.isNotEmpty) ? record.plane! : '1'}',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: theme.colorScheme.onSurface,
+                const SizedBox(width: 10),
+                for (final elem in widget.project.bitacoraElementOrder) ...[
+                  if (elem == 'capitulo' && widget.project.showChapter) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: badgeBg,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.fromBorderSide(badgeBorder),
+                      ),
+                      child: Text(
+                        'CAP: ${record.chapter.isNotEmpty ? record.chapter : '—'}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ] else if (elem == 'escena') ...[
+                    Text(
+                      'ESCENA ${record.scene.isNotEmpty ? record.scene : 'S/E'}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0.5,
+                        color: bannerTextColor,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ] else if (elem == 'plano' && widget.project.showPlane) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: badgeBg,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.fromBorderSide(badgeBorder),
+                      ),
+                      child: Text(
+                        'PLANO: ${(record.plane != null && record.plane!.isNotEmpty) ? record.plane! : '1'}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
+                ],
+                const SizedBox(width: 6),
+                Tooltip(
+                  message: 'Haz clic para editar Escena, Capítulo y Plano de este grupo ($sceneTakeCount ${sceneTakeCount == 1 ? "toma" : "tomas"})',
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: 16,
+                    color: bannerTextColor.withValues(alpha: 0.8),
+                  ),
                 ),
-              ),
-            ),
-          ],
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFF4F46E5),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '$sceneTakeCount ${sceneTakeCount == 1 ? 'toma' : 'tomas'}',
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4F46E5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '$sceneTakeCount ${sceneTakeCount == 1 ? 'toma' : 'tomas'}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1090,6 +1412,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     ShotRecord record, {
     required bool isNewScene,
     required int sceneTakeCount,
+    required int clusterStartIndex,
+    required int clusterCount,
   }) {
     String getClipForCam(String cam) {
       final camRecord = record.cameras.where((c) => c.cameraName == cam).firstOrNull;
@@ -1100,6 +1424,27 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       final newRecords = List<ShotRecord>.from(widget.project.log.records);
       newRecords[index] = newRecord;
       _updateRecords(newRecords);
+    }
+
+    void updateSetupField({String? chapter, String? scene, String? plane}) {
+      final newCap = chapter ?? record.chapter;
+      final newScene = scene ?? record.scene;
+      final newPlane = plane ?? (record.plane ?? '');
+      if (clusterCount > 1) {
+        _updateSetupForCluster(
+          clusterStartIndex,
+          clusterCount,
+          chapter: newCap,
+          scene: newScene,
+          plane: newPlane,
+        );
+      } else {
+        updateRecord(record.copyWith(
+          chapter: newCap,
+          scene: newScene,
+          plane: newPlane,
+        ));
+      }
     }
 
     void updateCam(String camName, String clipName) {
@@ -1200,59 +1545,63 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               ),
               const SizedBox(width: 8),
               if (!usePagesStyle) ...[
-                if (widget.project.showChapter) ...[
-                  SizedBox(
-                    width: 55, 
-                    child: _buildGridCell(
-                      record.chapter, 
-                      (v) => updateRecord(record.copyWith(chapter: v)), 
-                      hintText: 'Cap',
-                      labelText: 'Cap',
-                      autofocus: _autofocusFieldId == '${record.id}_cap',
-                      focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
-                      key: ValueKey('${record.id}_cap'),
+                for (final elem in widget.project.bitacoraElementOrder) ...[
+                  if (elem == 'capitulo' && widget.project.showChapter) ...[
+                    SizedBox(
+                      width: 55, 
+                      child: _buildGridCell(
+                        record.chapter, 
+                        (v) => updateSetupField(chapter: v), 
+                        hintText: 'Cap',
+                        labelText: 'Cap',
+                        autofocus: _autofocusFieldId == '${record.id}_cap',
+                        focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
+                        key: ValueKey('${record.id}_cap'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                SizedBox(
-                  width: 130, 
-                  child: _buildGridCell(
-                    record.scene, 
-                    (v) => updateRecord(record.copyWith(scene: v)), 
-                    hintText: 'Escena',
-                    labelText: 'Escena',
-                    autofocus: _autofocusFieldId == '${record.id}_scene',
-                    focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
-                    key: ValueKey('${record.id}_scene'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                if (widget.project.showPlane) ...[
-                  SizedBox(
-                    width: 55, 
-                    child: _buildGridCell(
-                      record.plane ?? '', 
-                      (v) => updateRecord(record.copyWith(plane: v)), 
-                      hintText: 'Plano',
-                      labelText: 'Plano',
-                      key: ValueKey('${record.id}_plane'),
+                    const SizedBox(width: 8),
+                  ] else if (elem == 'escena') ...[
+                    SizedBox(
+                      width: 130, 
+                      child: _buildGridCell(
+                        record.scene, 
+                        (v) => updateSetupField(scene: v), 
+                        hintText: 'Escena',
+                        labelText: 'Escena',
+                        autofocus: _autofocusFieldId == '${record.id}_scene',
+                        focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
+                        key: ValueKey('${record.id}_scene'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
+                    const SizedBox(width: 8),
+                  ] else if (elem == 'plano' && widget.project.showPlane) ...[
+                    SizedBox(
+                      width: 55, 
+                      child: _buildGridCell(
+                        record.plane ?? '', 
+                        (v) => updateSetupField(plane: v), 
+                        hintText: 'Plano',
+                        labelText: 'Plano',
+                        key: ValueKey('${record.id}_plane'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ] else if (elem == 'toma') ...[
+                    SizedBox(
+                      width: 60, 
+                      child: _buildGridCell(
+                        record.take, 
+                        (v) => updateRecord(record.copyWith(take: v)), 
+                        hintText: 'Toma',
+                        labelText: 'Toma',
+                        autofocus: _autofocusFieldId == '${record.id}_take',
+                        focusNode: (_autofocusFieldId == '${record.id}_take') ? _activeAutofocusNode : null,
+                        key: ValueKey('${record.id}_take'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                 ],
-                SizedBox(
-                  width: 60, 
-                  child: _buildGridCell(
-                    record.take, 
-                    (v) => updateRecord(record.copyWith(take: v)), 
-                    hintText: 'Toma',
-                    labelText: 'Toma',
-                    autofocus: _autofocusFieldId == '${record.id}_take',
-                    focusNode: (_autofocusFieldId == '${record.id}_take') ? _activeAutofocusNode : null,
-                    key: ValueKey('${record.id}_take'),
-                  ),
-                ),
               ] else ...[
                 SizedBox(
                   width: 60, 
@@ -1266,8 +1615,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     key: ValueKey('${record.id}_take'),
                   ),
                 ),
+                const SizedBox(width: 8),
               ],
-              const SizedBox(width: 8),
               for (var cam in widget.project.cameraNames)
                 Padding(
                   padding: const EdgeInsets.only(right: 8.0),
@@ -1402,59 +1751,183 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               child: Row(
                 children: [
                   if (usePagesStyle) ...[
-                    if (widget.project.showChapter) ...[
-                      SizedBox(
-                        width: 55,
-                        child: _buildGridCell(
-                          record.chapter,
-                          (v) => updateRecord(record.copyWith(chapter: v)),
-                          hintText: 'Cap',
-                          labelText: 'Cap',
-                          autofocus: _autofocusFieldId == '${record.id}_cap',
-                          focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
-                          key: ValueKey('${record.id}_tier2_cap'),
+                    for (final elem in widget.project.bitacoraElementOrder) ...[
+                      if (elem == 'capitulo' && widget.project.showChapter) ...[
+                        SizedBox(
+                          width: 55,
+                          child: _buildGridCell(
+                            record.chapter,
+                            (v) => updateSetupField(chapter: v),
+                            hintText: 'Cap',
+                            labelText: 'Cap',
+                            autofocus: _autofocusFieldId == '${record.id}_cap',
+                            focusNode: (_autofocusFieldId == '${record.id}_cap') ? _activeAutofocusNode : null,
+                            key: ValueKey('${record.id}_tier2_cap'),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    SizedBox(
-                      width: 80,
-                      child: _buildGridCell(
-                        record.scene,
-                        (v) => updateRecord(record.copyWith(scene: v)),
-                        hintText: 'Escena',
-                        labelText: 'Escena',
-                        autofocus: _autofocusFieldId == '${record.id}_scene',
-                        focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
-                        key: ValueKey('${record.id}_tier2_scene'),
-                      ),
-                    ),
-                    if (widget.project.showPlane) ...[
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 55,
-                        child: _buildGridCell(
-                          record.plane ?? '',
-                          (v) => updateRecord(record.copyWith(plane: v)),
-                          hintText: 'Plano',
-                          labelText: 'Plano',
-                          key: ValueKey('${record.id}_tier2_plane'),
+                        const SizedBox(width: 8),
+                      ] else if (elem == 'escena') ...[
+                        SizedBox(
+                          width: 80,
+                          child: _buildGridCell(
+                            record.scene,
+                            (v) => updateSetupField(scene: v),
+                            hintText: 'Escena',
+                            labelText: 'Escena',
+                            autofocus: _autofocusFieldId == '${record.id}_scene',
+                            focusNode: (_autofocusFieldId == '${record.id}_scene') ? _activeAutofocusNode : null,
+                            key: ValueKey('${record.id}_tier2_scene'),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 8),
+                      ] else if (elem == 'plano' && widget.project.showPlane) ...[
+                        SizedBox(
+                          width: 55,
+                          child: _buildGridCell(
+                            record.plane ?? '',
+                            (v) => updateSetupField(plane: v),
+                            hintText: 'Plano',
+                            labelText: 'Plano',
+                            key: ValueKey('${record.id}_tier2_plane'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                     ],
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 4),
                   ],
                   if (widget.project.showMos) ...[
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Checkbox(
-                          value: record.isMos,
-                          onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
-                          visualDensity: VisualDensity.compact,
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () => updateRecord(record.copyWith(isMos: !record.isMos)),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Checkbox(
+                            key: ValueKey('${record.id}_is_mos'),
+                            value: record.isMos,
+                            onChanged: (val) => updateRecord(record.copyWith(isMos: val ?? false)),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Text('MOS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                          const SizedBox(width: 4),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showDs) ...[
+                    Tooltip(
+                      message: 'Driving Shot',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => updateRecord(record.copyWith(isDs: !record.isDs)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: ValueKey('${record.id}_is_ds'),
+                              value: record.isDs,
+                              onChanged: (val) => updateRecord(record.copyWith(isDs: val ?? false)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const Text('DS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(width: 4),
+                          ],
                         ),
-                        const Text('MOS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                      ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showFf) ...[
+                    Tooltip(
+                      message: 'Free Fly',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => updateRecord(record.copyWith(isFf: !record.isFf)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: ValueKey('${record.id}_is_ff'),
+                              value: record.isFf,
+                              onChanged: (val) => updateRecord(record.copyWith(isFf: val ?? false)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const Text('FF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(width: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showGpr) ...[
+                    Tooltip(
+                      message: 'GoPro',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => updateRecord(record.copyWith(isGpr: !record.isGpr)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: ValueKey('${record.id}_is_gpr'),
+                              value: record.isGpr,
+                              onChanged: (val) => updateRecord(record.copyWith(isGpr: val ?? false)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const Text('GPR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(width: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showDr) ...[
+                    Tooltip(
+                      message: 'Drone',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => updateRecord(record.copyWith(isDr: !record.isDr)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: ValueKey('${record.id}_is_dr'),
+                              value: record.isDr,
+                              onChanged: (val) => updateRecord(record.copyWith(isDr: val ?? false)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const Text('DR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(width: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  if (widget.project.showTf) ...[
+                    Tooltip(
+                      message: 'Toma Falsa / Descartada',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(4),
+                        onTap: () => updateRecord(record.copyWith(isTf: !record.isTf)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: ValueKey('${record.id}_is_tf'),
+                              value: record.isTf,
+                              onChanged: (val) => updateRecord(record.copyWith(isTf: val ?? false)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const Text('TF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(width: 4),
+                          ],
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 12),
                   ],
@@ -1478,7 +1951,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (usePagesStyle && isNewScene)
-          _buildSceneHeaderBanner(record, sceneTakeCount),
+          _buildSceneHeaderBanner(record, sceneTakeCount, clusterStartIndex),
         KeyedSubtree(
           key: ValueKey('card_${record.id}'),
           child: cardWidget,
@@ -1568,157 +2041,17 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   }
 
   void _showConfigDialog() {
-    List<String> tempCameras = List.from(widget.project.cameraNames);
-    bool tempShowChapter = widget.project.showChapter;
-    bool tempShowPlane = widget.project.showPlane;
-    bool tempShowMos = widget.project.showMos;
-    bool tempShowTcOut = widget.project.showTcOut;
-
     showDialog(
       context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
-            return AlertDialog(
-              title: const Text('Configuración de Bitácora'),
-              content: SizedBox(
-                width: 440,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Columnas y Campos Visibles',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                      const SizedBox(height: 8),
-                      CheckboxListTile(
-                        title: const Text('Capítulo'),
-                        value: tempShowChapter,
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (val) {
-                          setStateDialog(() {
-                            tempShowChapter = val ?? true;
-                          });
-                        },
-                      ),
-                      CheckboxListTile(
-                        title: const Text('Plano'),
-                        value: tempShowPlane,
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (val) {
-                          setStateDialog(() {
-                            tempShowPlane = val ?? true;
-                          });
-                        },
-                      ),
-                      CheckboxListTile(
-                        title: const Text('MOS'),
-                        value: tempShowMos,
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (val) {
-                          setStateDialog(() {
-                            tempShowMos = val ?? true;
-                          });
-                        },
-                      ),
-                      CheckboxListTile(
-                        title: const Text('TC Out'),
-                        value: tempShowTcOut,
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (val) {
-                          setStateDialog(() {
-                            tempShowTcOut = val ?? true;
-                          });
-                        },
-                      ),
-                      const Divider(height: 24),
-                      const Text(
-                        'Configuración de Cámaras',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                      const SizedBox(height: 8),
-                      for (int i = 0; i < tempCameras.length; i++)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: TextFormField(
-                                  initialValue: tempCameras[i],
-                                  onChanged: (val) => tempCameras[i] = val,
-                                  decoration: const InputDecoration(labelText: 'Nombre de cámara', isDense: true),
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                onPressed: () {
-                                  setStateDialog(() {
-                                    tempCameras.removeAt(i);
-                                  });
-                                },
-                              )
-                            ],
-                          ),
-                        ),
-                      const SizedBox(height: 8),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.add),
-                        label: const Text('Agregar cámara'),
-                        onPressed: () {
-                          setStateDialog(() {
-                            tempCameras.add('CÁMARA ${tempCameras.length + 1}');
-                          });
-                        },
-                      )
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancelar'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    tempCameras.removeWhere((c) => c.trim().isEmpty);
-                    if (tempCameras.isEmpty) tempCameras.add('A');
-                    
-                    final updatedRecords = widget.project.log.records.map((record) {
-                      final updatedCameras = List<CameraTakeRecord>.from(record.cameras);
-                      for (var cam in tempCameras) {
-                        if (!updatedCameras.any((c) => c.cameraName == cam)) {
-                          updatedCameras.add(CameraTakeRecord(cameraName: cam, clipName: ''));
-                        }
-                      }
-                      return record.copyWith(cameras: updatedCameras);
-                    }).toList();
-
-                    final updatedLog = widget.project.log.copyWith(records: updatedRecords);
-                    widget.onProjectChanged(widget.project.copyWith(
-                      cameraNames: tempCameras,
-                      showChapter: tempShowChapter,
-                      showPlane: tempShowPlane,
-                      showMos: tempShowMos,
-                      showTcOut: tempShowTcOut,
-                      log: updatedLog,
-                    ));
-                    setState(() {});
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Guardar'),
-                ),
-              ],
-            );
-          }
-        );
-      }
+      builder: (context) => SettingsDialog(
+        currentSettings: widget.settings,
+        onSettingsChanged: (newSettings) {
+          widget.onSettingsChanged?.call(newSettings);
+        },
+        project: widget.project,
+        onProjectChanged: widget.onProjectChanged,
+        initialTabIndex: 1,
+      ),
     );
   }
 
@@ -1739,6 +2072,8 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
             listenable: _timecodeService,
             builder: (context, _) {
               return Container(
+                constraints: const BoxConstraints(minWidth: 172),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: theme.colorScheme.primaryContainer.withValues(alpha: isDark ? 0.4 : 0.6),
                   borderRadius: BorderRadius.circular(6),
@@ -1747,39 +2082,41 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.fiber_manual_record, size: 10, color: Colors.redAccent),
-                          const SizedBox(width: 5),
-                          Text(
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.fiber_manual_record, size: 10, color: Colors.redAccent),
+                        const SizedBox(width: 5),
+                        SizedBox(
+                          width: 92,
+                          child: Text(
                             _timecodeService.currentFormattedTimecode,
+                            textAlign: TextAlign.center,
                             style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w900,
                               fontFamily: 'monospace',
+                              fontFeatures: [FontFeature.tabularFigures()],
                             ),
                           ),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary,
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: Text(
-                              _timecodeService.isTimeOfDay ? 'TOD' : 'JAM',
-                              style: TextStyle(
-                                fontSize: 9,
-                                fontWeight: FontWeight.bold,
-                                color: theme.colorScheme.onPrimary,
-                              ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                          child: Text(
+                            _timecodeService.isTimeOfDay ? 'TOD' : 'JAM',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onPrimary,
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                     PopupMenuButton<String>(
                       icon: const Icon(Icons.access_time, size: 18),
@@ -1828,6 +2165,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
               );
             },
           ),
+          const SizedBox(width: 12),
           // 2. Auto TC Checkbox
           ListenableBuilder(
             listenable: _timecodeService,

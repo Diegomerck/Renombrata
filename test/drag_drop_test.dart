@@ -41,7 +41,7 @@ void main() {
     expect(find.text('Suelta tus archivos aquí'), findsOneWidget);
     expect(find.textContaining('Suelta aquí carpetas de medios'), findsOneWidget);
     expect(find.text('Carpeta de Medios'), findsOneWidget);
-    expect(find.text('Bitácora (.xlsx, .xls)'), findsOneWidget);
+    expect(find.text('Bitácora (.xlsx, .rtf, .txt, .pages)'), findsOneWidget);
     expect(find.text('Proyecto (.renombrata)'), findsOneWidget);
 
     // Trigger drag exited
@@ -71,7 +71,7 @@ void main() {
     final dropTargetFinder = find.byType(DropTarget);
     final dropTarget = tester.widget<DropTarget>(dropTargetFinder);
 
-    final tempFile = File('${Directory.systemTemp.path}/test_unknown.txt');
+    final tempFile = File('${Directory.systemTemp.path}/test_unknown.pdf');
     if (!tempFile.existsSync()) {
       tempFile.writeAsStringSync('dummy content');
     }
@@ -246,5 +246,121 @@ void main() {
 
     // Verify notification for bitácora import
     expect(find.textContaining('Bitácora importada'), findsOneWidget);
+  });
+
+  testWidgets('DropTarget handles Apple Pages (.pages) file with platform dialog', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HomeScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final dropTargetFinder = find.byType(DropTarget);
+    final dropTarget = tester.widget<DropTarget>(dropTargetFinder);
+
+    final tempPagesFile = File('${Directory.systemTemp.path}/test_callsheet.pages');
+    tempPagesFile.writeAsStringSync('dummy pages content');
+    addTearDown(() {
+      if (tempPagesFile.existsSync()) tempPagesFile.deleteSync();
+    });
+
+    await tester.runAsync(() async {
+      dropTarget.onDragDone?.call(DropDoneDetails(
+        files: [DropItemFile(tempPagesFile.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
+    });
+    await tester.pumpAndSettle();
+
+    if (Platform.isWindows) {
+      // On Windows, the informative dialog is shown
+      expect(find.text('Archivo Apple Pages (.pages)'), findsOneWidget);
+      expect(find.textContaining('Los archivos de Apple Pages (.pages) se procesan automáticamente en macOS'), findsOneWidget);
+      expect(find.text('Entendido'), findsOneWidget);
+
+      await tester.tap(find.text('Entendido'));
+      await tester.pumpAndSettle();
+      expect(find.text('Archivo Apple Pages (.pages)'), findsNothing);
+    }
+  });
+
+  testWidgets('DropTarget handles plain text bitácora (.txt) and imports log', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HomeScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final dropTargetFinder = find.byType(DropTarget);
+    final dropTarget = tester.widget<DropTarget>(dropTargetFinder);
+
+    final tempTxtFile = File('${Directory.systemTemp.path}/test_bitacora.txt');
+    tempTxtFile.writeAsStringSync('TODTA_2_13_P1_T1_A001_D01_1_U1\nTODTA_2_13_P1_TF1_A001_D01_2_U1\n');
+    addTearDown(() {
+      if (tempTxtFile.existsSync()) tempTxtFile.deleteSync();
+    });
+
+    await tester.runAsync(() async {
+      dropTarget.onDragDone?.call(DropDoneDetails(
+        files: [DropItemFile(tempTxtFile.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Bitácora importada'), findsOneWidget);
+    expect(find.textContaining('2 tomas registradas en 1 reels'), findsOneWidget);
+  });
+
+  testWidgets('DropTarget handles RTF bitácora (.rtf) and imports log', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HomeScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final dropTargetFinder = find.byType(DropTarget);
+    final dropTarget = tester.widget<DropTarget>(dropTargetFinder);
+
+    final tempRtfFile = File('${Directory.systemTemp.path}/test_bitacora.rtf');
+    tempRtfFile.writeAsStringSync(r'{\rtf1\ansi\deff0 {\fonttbl{\f0 Helvetica;}}\pard TODTA_2_13_P1_T1_A001_D01_1_U1\par TODTA_2_13_P1_T2_B001_D01_2_U1\par}');
+    addTearDown(() {
+      if (tempRtfFile.existsSync()) tempRtfFile.deleteSync();
+    });
+
+    await tester.runAsync(() async {
+      dropTarget.onDragDone?.call(DropDoneDetails(
+        files: [DropItemFile(tempRtfFile.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Bitácora importada'), findsOneWidget);
+    expect(find.textContaining('2 tomas registradas en 2 reels'), findsOneWidget);
   });
 }

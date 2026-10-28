@@ -219,7 +219,7 @@ void main() {
       // Verify returned overrides
       expect(returnedOverrides, isNotNull);
       expect(returnedOverrides!['/media/A001C005_BBB.MOV'], 'rec_take_1');
-      expect(returnedOverrides!['/media/A001C005_AAA.MOV'], isNull); // AAA became omitted
+      expect(returnedOverrides!['/media/A001C005_AAA.MOV'], '__ALT__:rec_take_1'); // AAA became alternate (_ALT)
     });
 
     testWidgets('pre-populates existing overrides and allows resetting to conflict', (WidgetTester tester) async {
@@ -403,6 +403,80 @@ void main() {
 
       expect(returnedOverrides, isNotNull);
       expect(returnedOverrides!['/media/C0001.MP4'], 'rec_take_1');
+    });
+
+    testWidgets('groups multiple proposals sharing same reel and clip index in one conflict group', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final log = ShootingLog(
+        metadata: ShootingLogMetadata.empty(),
+        records: [],
+      );
+
+      final prop1 = RenameProposal(
+        originalFilePath: '/media/A007C001_261007OC.MP4',
+        proposedFileName: 'A007C001_261007OC.MP4',
+        fileReel: 'A007',
+        status: ProposalStatus.conflict,
+      );
+
+      final prop2 = RenameProposal(
+        originalFilePath: '/media/A007C001_ALT.MP4',
+        proposedFileName: 'A007C001_ALT.MP4',
+        fileReel: 'A007',
+        status: ProposalStatus.conflict,
+      );
+
+      final report = DryRunReport(proposals: [prop1, prop2]);
+
+      Map<String, String?>? returnedOverrides;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () async {
+                    returnedOverrides = await showDialog<Map<String, String?>>(
+                      context: context,
+                      builder: (ctx) => ConflictResolverDialog(
+                        report: report,
+                        log: log,
+                      ),
+                    );
+                  },
+                  child: const Text('Open Dialog'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Dialog'));
+      await tester.pumpAndSettle();
+
+      // Verify both candidates are in the same conflict group
+      expect(find.text('Resolución de Conflictos de Medios'), findsOneWidget);
+      expect(find.text('1 conflicto'), findsOneWidget);
+      expect(find.text('A007C001_261007OC.MP4'), findsOneWidget);
+      expect(find.text('A007C001_ALT.MP4'), findsOneWidget);
+
+      // Verify winner badge and alternate badge are displayed
+      expect(find.text('Ganador / Principal'), findsOneWidget);
+      expect(find.text('Alterno (_ALT)'), findsOneWidget);
+
+      // Click "Guardar cambios"
+      await tester.tap(find.text('Guardar cambios'));
+      await tester.pumpAndSettle();
+
+      expect(returnedOverrides, isNotNull);
+      expect(returnedOverrides!['/media/A007C001_261007OC.MP4'], '__PRIMARY__');
+      expect(returnedOverrides!['/media/A007C001_ALT.MP4'], '__ALT__');
     });
   });
 }

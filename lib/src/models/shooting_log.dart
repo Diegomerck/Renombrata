@@ -149,6 +149,11 @@ class ShotRecord {
   final String? tcOut;
   final String? observations;
   final bool isMos;
+  final bool isDs;   // Driving Shot
+  final bool isFf;   // Free Fly
+  final bool isGpr;  // GoPro
+  final bool isDr;   // Drone
+  final bool isTf;   // Toma Falsa / False Take
 
   String? get notes => observations;
 
@@ -164,6 +169,11 @@ class ShotRecord {
     this.tcOut,
     this.observations,
     this.isMos = false,
+    this.isDs = false,
+    this.isFf = false,
+    this.isGpr = false,
+    this.isDr = false,
+    this.isTf = false,
   }) : id = id ?? Uuid().v4();
 
   ShotRecord copyWith({
@@ -178,6 +188,11 @@ class ShotRecord {
     String? tcOut,
     String? observations,
     bool? isMos,
+    bool? isDs,
+    bool? isFf,
+    bool? isGpr,
+    bool? isDr,
+    bool? isTf,
   }) {
     return ShotRecord(
       id: id ?? this.id,
@@ -191,6 +206,11 @@ class ShotRecord {
       tcOut: tcOut ?? this.tcOut,
       observations: observations ?? this.observations,
       isMos: isMos ?? this.isMos,
+      isDs: isDs ?? this.isDs,
+      isFf: isFf ?? this.isFf,
+      isGpr: isGpr ?? this.isGpr,
+      isDr: isDr ?? this.isDr,
+      isTf: isTf ?? this.isTf,
     );
   }
 
@@ -206,6 +226,11 @@ class ShotRecord {
     'tcOut': tcOut ?? '',
     'observations': observations ?? '',
     'isMos': isMos,
+    'isDs': isDs,
+    'isFf': isFf,
+    'isGpr': isGpr,
+    'isDr': isDr,
+    'isTf': isTf,
   };
 
   factory ShotRecord.fromJson(Map<String, dynamic> json) => ShotRecord(
@@ -223,6 +248,11 @@ class ShotRecord {
     tcOut: (json['tcOut'] == null || json['tcOut'] == '') ? null : json['tcOut'] as String,
     observations: (json['observations'] == null || json['observations'] == '') ? null : json['observations'] as String,
     isMos: json['isMos'] as bool? ?? false,
+    isDs: json['isDs'] as bool? ?? false,
+    isFf: json['isFf'] as bool? ?? false,
+    isGpr: json['isGpr'] as bool? ?? false,
+    isDr: json['isDr'] as bool? ?? false,
+    isTf: json['isTf'] as bool? ?? false,
   );
 }
 

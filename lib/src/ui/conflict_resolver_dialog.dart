@@ -53,12 +53,55 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
         .where((r) => seenIds.add(r.id))
         .toList();
 
-    // Group all proposals that are in conflict or currently overridden
+    String getProposalReel(RenameProposal pItem) {
+      final r = pItem.fileReel ?? pItem.associatedRecord?.reel;
+      if (r != null && r.trim().isNotEmpty) return r.trim().toUpperCase();
+      if (pItem.originalFilePath != null) {
+        final extracted = ClipMatcherService.extractReel(pItem.originalFilePath!);
+        if (extracted != null && extracted.isNotEmpty) return extracted.toUpperCase();
+      }
+      return '';
+    }
+
+    String getProposalClipNum(RenameProposal pItem) {
+      if (pItem.originalFilePath != null) {
+        final cn = ClipMatcherService.extractClipNumber(p.basename(pItem.originalFilePath!));
+        if (cn.isNotEmpty) return cn;
+      }
+      if (pItem.associatedRecord != null) {
+        for (var cam in pItem.associatedRecord!.cameras) {
+          final cn = ClipMatcherService.extractClipNumber(cam.clipName);
+          if (cn.isNotEmpty) return cn;
+        }
+      }
+      return '';
+    }
+
+    // Identify proposals sharing the same reel and clip index
+    final byReelAndClip = <String, List<RenameProposal>>{};
+    for (var pItem in widget.report.proposals) {
+      if (pItem.isCompanionFile || pItem.originalFilePath == null) continue;
+      final reel = getProposalReel(pItem);
+      final clipNum = getProposalClipNum(pItem);
+      if (clipNum.isNotEmpty) {
+        final key = '${reel}_$clipNum';
+        byReelAndClip.putIfAbsent(key, () => []).add(pItem);
+      }
+    }
+
+    // Group all proposals that are in conflict, currently overridden, or share (reel, clipNum)
     final seenConflictPaths = <String>{};
     final conflictProposals = <RenameProposal>[];
     for (var pItem in widget.report.proposals) {
       if (pItem.isCompanionFile || pItem.originalFilePath == null) continue;
-      if (pItem.status == ProposalStatus.conflict || widget.currentOverrides.containsKey(pItem.originalFilePath)) {
+      final reel = getProposalReel(pItem);
+      final clipNum = getProposalClipNum(pItem);
+      final key = '${reel}_$clipNum';
+      final isDuplicateOnDisk = (byReelAndClip[key]?.length ?? 0) > 1;
+
+      if (pItem.status == ProposalStatus.conflict ||
+          widget.currentOverrides.containsKey(pItem.originalFilePath) ||
+          isDuplicateOnDisk) {
         if (seenConflictPaths.add(pItem.originalFilePath!)) {
           conflictProposals.add(pItem);
         }
@@ -68,15 +111,22 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
     final Map<String, List<RenameProposal>> grouped = {};
     for (var pItem in conflictProposals) {
       final overrideVal = widget.currentOverrides[pItem.originalFilePath];
-      final groupKey = pItem.associatedRecord?.id ?? 
-          overrideVal ??
-          ClipMatcherService.extractClipNumber(p.basename(pItem.originalFilePath!));
+      final reel = getProposalReel(pItem);
+      final clipNum = getProposalClipNum(pItem);
+      final key = '${reel}_$clipNum';
+
+      String groupKey;
+      if ((byReelAndClip[key]?.length ?? 0) > 1) {
+        groupKey = key;
+      } else {
+        groupKey = pItem.associatedRecord?.id ?? overrideVal ?? key;
+      }
       grouped.putIfAbsent(groupKey, () => []).add(pItem);
     }
 
     _groups = grouped.entries.map((entry) {
       final candidates = entry.value;
-      var targetRecord = candidates.firstWhere((c) => c.associatedRecord != null, orElse: () => candidates.first).associatedRecord;
+      var targetRecord = candidates.where((c) => c.associatedRecord != null).map((c) => c.associatedRecord!).firstOrNull;
       if (targetRecord == null && widget.log.records.isNotEmpty) {
         for (var c in candidates) {
           final recId = widget.currentOverrides[c.originalFilePath];
@@ -84,6 +134,18 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
             targetRecord = widget.log.records.where((r) => r.id == recId).firstOrNull;
             if (targetRecord != null) break;
           }
+        }
+        if (targetRecord == null) {
+          final clipNum = getProposalClipNum(candidates.first);
+          final reel = getProposalReel(candidates.first);
+          targetRecord = widget.log.records.where((r) {
+            final rReel = r.reel.trim().toUpperCase();
+            final matchesReel = reel.isEmpty || rReel.isEmpty || rReel == reel;
+            final matchesClip = r.cameras.any((cam) =>
+                ClipMatcherService.extractClipNumber(cam.clipName) == clipNum ||
+                cam.clipName == clipNum);
+            return matchesReel && matchesClip;
+          }).firstOrNull;
         }
       }
 
@@ -97,7 +159,7 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
         }
       }
       if (expectedClip.isEmpty && candidates.first.originalFilePath != null) {
-        expectedClip = ClipMatcherService.extractClipNumber(p.basename(candidates.first.originalFilePath!));
+        expectedClip = getProposalClipNum(candidates.first);
       }
 
       return _ConflictGroup(
@@ -109,8 +171,7 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
     }).toList();
 
     // Set intelligent default resolutions if not already resolved:
-    // First candidate becomes the winner for target take, secondary candidates are marked as omit
-    // (Only auto-resolve if there are multiple candidates and no timecode discrepancies)
+    // First candidate becomes the winner for target take, secondary candidates are marked as alternate or omit
     for (var group in _groups) {
       final hasAnyOverride = group.candidates.any((c) => _overrides.containsKey(c.originalFilePath));
       if (!hasAnyOverride && group.candidates.isNotEmpty) {
@@ -119,10 +180,17 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
           return temp.hasTimecodeDiscrepancy;
         });
 
-        if (!hasTcConflict && group.targetRecord != null && group.candidates.length > 1) {
-          _overrides[group.candidates.first.originalFilePath!] = group.targetRecord!.id;
-          for (int i = 1; i < group.candidates.length; i++) {
-            _overrides[group.candidates[i].originalFilePath!] = null;
+        if (!hasTcConflict && group.candidates.length > 1) {
+          if (group.targetRecord != null) {
+            _overrides[group.candidates.first.originalFilePath!] = group.targetRecord!.id;
+            for (int i = 1; i < group.candidates.length; i++) {
+              _overrides[group.candidates[i].originalFilePath!] = '__ALT__:${group.targetRecord!.id}';
+            }
+          } else {
+            _overrides[group.candidates.first.originalFilePath!] = '__PRIMARY__';
+            for (int i = 1; i < group.candidates.length; i++) {
+              _overrides[group.candidates[i].originalFilePath!] = '__ALT__';
+            }
           }
         }
       }
@@ -170,15 +238,21 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
 
   void _setWinner(_ConflictGroup group, String winnerPath) {
     setState(() {
-      if (group.targetRecord != null) {
-        _overrides[winnerPath] = group.targetRecord!.id;
+      final target = group.targetRecord;
+      if (target != null) {
+        _overrides[winnerPath] = target.id;
         for (var c in group.candidates) {
           final path = c.originalFilePath;
           if (path != null && path != winnerPath) {
-            // If another candidate in this group had the target record, set to omit
-            if (_overrides[path] == group.targetRecord!.id) {
-              _overrides[path] = null;
-            }
+            _overrides[path] = '__ALT__:${target.id}';
+          }
+        }
+      } else {
+        _overrides[winnerPath] = '__PRIMARY__';
+        for (var c in group.candidates) {
+          final path = c.originalFilePath;
+          if (path != null && path != winnerPath) {
+            _overrides[path] = '__ALT__';
           }
         }
       }
@@ -355,7 +429,8 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
 
                 final isAssigned = _overrides.containsKey(path);
                 final currentAssignment = _overrides[path];
-                final isWinner = isAssigned && record != null && currentAssignment == record.id;
+                final isWinner = isAssigned && ((record != null && currentAssignment == record.id) || currentAssignment == '__PRIMARY__');
+                final isAlternate = isAssigned && (currentAssignment == '__ALT__' || (currentAssignment != null && currentAssignment.startsWith('__ALT__:')));
                 final isUnassigned = !isAssigned;
 
                 Color cardBg;
@@ -363,6 +438,9 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                 if (isWinner) {
                   cardBg = isDark ? Colors.green.shade900.withValues(alpha: 0.25) : Colors.green.shade50;
                   borderColor = isDark ? Colors.green.shade700 : Colors.green.shade400;
+                } else if (isAlternate) {
+                  cardBg = isDark ? Colors.blue.shade900.withValues(alpha: 0.2) : Colors.blue.shade50;
+                  borderColor = isDark ? Colors.blue.shade700 : Colors.blue.shade300;
                 } else if (isUnassigned) {
                   cardBg = isDark ? Colors.orange.shade900.withValues(alpha: 0.2) : Colors.orange.shade50.withValues(alpha: 0.4);
                   borderColor = isDark ? Colors.orange.shade900 : Colors.orange.shade300;
@@ -376,6 +454,9 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                 if (isWinner) {
                   statusIcon = Icons.check_circle;
                   iconColor = Colors.green;
+                } else if (isAlternate) {
+                  statusIcon = Icons.alt_route_rounded;
+                  iconColor = Colors.blue;
                 } else if (isUnassigned) {
                   statusIcon = Icons.warning_amber_rounded;
                   iconColor = Colors.orange.shade800;
@@ -398,7 +479,11 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                         value: path,
                         groupValue: group.candidates
                             .firstWhere(
-                              (c) => _overrides.containsKey(c.originalFilePath) && _overrides[c.originalFilePath!] == record?.id,
+                              (c) {
+                                final a = _overrides[c.originalFilePath];
+                                return _overrides.containsKey(c.originalFilePath) &&
+                                    ((record != null && a == record.id) || a == '__PRIMARY__');
+                              },
                               orElse: () => RenameProposal(proposedFileName: '', status: ProposalStatus.conflict),
                             )
                             .originalFilePath,
@@ -424,14 +509,42 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              filename,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
-                                color: isWinner && !isDark ? Colors.green.shade900 : null,
-                              ),
-                              overflow: TextOverflow.ellipsis,
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    filename,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      color: isWinner && !isDark ? Colors.green.shade900 : null,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (isWinner)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.withValues(alpha: isDark ? 0.25 : 0.15),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: Colors.green.shade600, width: 1),
+                                    ),
+                                    child: const Text('Ganador / Principal', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green)),
+                                  ),
+                                if (isAlternate)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.withValues(alpha: isDark ? 0.25 : 0.15),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: Colors.blue.shade600, width: 1),
+                                    ),
+                                    child: const Text('Alterno (_ALT)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blue)),
+                                  ),
+                              ],
                             ),
                             const SizedBox(height: 2),
                             Text(
@@ -512,6 +625,79 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
     final isAssigned = _overrides.containsKey(path);
     final dropdownValue = isAssigned ? (currentAssignment ?? '__OMIT__') : '__UNASSIGNED__';
 
+    final items = <DropdownMenuItem<String>>[
+      const DropdownMenuItem(
+        value: '__UNASSIGNED__',
+        child: Text(
+          '⚠ Conflicto (Sin resolver)',
+          style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w600),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      if (targetRecord != null) ...[
+        DropdownMenuItem(
+          value: targetRecord.id,
+          child: Text(
+            group.candidates.length == 1
+                ? '✓ Confirmar (Esc. ${targetRecord.scene} - T${targetRecord.take})'
+                : '✓ Ganador (Esc. ${targetRecord.scene} - T${targetRecord.take})',
+            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        DropdownMenuItem(
+          value: '__ALT__:${targetRecord.id}',
+          child: Text(
+            '↳ Alterno (_ALT) (Esc. ${targetRecord.scene} - T${targetRecord.take})',
+            style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.w600),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ] else ...[
+        const DropdownMenuItem(
+          value: '__PRIMARY__',
+          child: Text(
+            '✓ Toma Principal',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const DropdownMenuItem(
+          value: '__ALT__',
+          child: Text(
+            '↳ Alterno (_ALT)',
+            style: TextStyle(color: Colors.blue, fontWeight: FontWeight.w600),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+      const DropdownMenuItem(
+        value: '__OMIT__',
+        child: Text(
+          '⊘ Omitir (No renombrar)',
+          style: TextStyle(color: Colors.orange),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      for (var missing in _missingTakes)
+        if (missing.id != targetRecord?.id)
+          DropdownMenuItem(
+            value: missing.id,
+            child: Text(
+              '→ Asignar a: Esc. ${missing.scene} T${missing.take} (Reel ${missing.reel})',
+              style: const TextStyle(color: Colors.blue),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+    ];
+
+    if (!items.any((item) => item.value == dropdownValue)) {
+      items.add(DropdownMenuItem(
+        value: dropdownValue,
+        child: Text(dropdownValue, overflow: TextOverflow.ellipsis),
+      ));
+    }
+
     return SizedBox(
       width: 290,
       child: DropdownButtonFormField<String>(
@@ -524,45 +710,7 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
           isDense: true,
         ),
         style: const TextStyle(fontSize: 12),
-        items: [
-          const DropdownMenuItem(
-            value: '__UNASSIGNED__',
-            child: Text(
-              '⚠ Conflicto (Sin resolver)',
-              style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w600),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (targetRecord != null)
-            DropdownMenuItem(
-              value: targetRecord.id,
-              child: Text(
-                group.candidates.length == 1
-                    ? '✓ Confirmar (Esc. ${targetRecord.scene} - T${targetRecord.take})'
-                    : '✓ Ganador (Esc. ${targetRecord.scene} - T${targetRecord.take})',
-                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          const DropdownMenuItem(
-            value: '__OMIT__',
-            child: Text(
-              '⊘ Omitir (No renombrar)',
-              style: TextStyle(color: Colors.orange),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          for (var missing in _missingTakes)
-            if (missing.id != targetRecord?.id)
-              DropdownMenuItem(
-                value: missing.id,
-                child: Text(
-                  '→ Asignar a: Esc. ${missing.scene} T${missing.take} (Reel ${missing.reel})',
-                  style: const TextStyle(color: Colors.blue),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-        ],
+        items: items,
         onChanged: (val) {
           if (val == null) return;
           setState(() {
@@ -570,7 +718,7 @@ class _ConflictResolverDialogState extends State<ConflictResolverDialog> {
               _overrides.remove(path);
             } else if (val == '__OMIT__') {
               _overrides[path] = null;
-            } else if (val == targetRecord?.id) {
+            } else if (val == targetRecord?.id || val == '__PRIMARY__') {
               _setWinner(group, path);
             } else {
               _overrides[path] = val;

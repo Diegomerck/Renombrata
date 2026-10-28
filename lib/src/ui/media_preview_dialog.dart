@@ -71,7 +71,6 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
   Player? _player;
   VideoController? _controller;
   bool _ownsPlayer = false;
-  String? _initError;
 
   late int _currentIndex;
   final Map<int, _ClipTagState> _clipStates = {};
@@ -203,7 +202,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
         }
       });
     } catch (e) {
-      _initError = e.toString();
+      debugPrint('Error initializing player: $e');
     }
   }
 
