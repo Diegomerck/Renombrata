@@ -785,4 +785,195 @@ void main() {
       expect(saveCalled, isTrue);
     });
   });
+
+  group('BitacoraEditorTab - Camera-Agnostic Reel Normalization & Take Inheritance', () {
+    testWidgets('Nueva Toma and Duplicar inherit reel from previous record', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      RenombrataProject currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Tap Nueva Toma -> should inherit '001'
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Nueva Toma'));
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 2);
+      expect(currentProject.log.records[1].reel, '001');
+
+      // Tap Duplicar última toma -> should also inherit '001'
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Duplicar última toma'));
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 3);
+      expect(currentProject.log.records[2].reel, '001');
+    });
+
+    testWidgets('editing reel normalizes camera prefix, updates project defaultReel, and subsequent Nueva Toma inherits it', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      RenombrataProject currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
+          ],
+        ),
+        defaultReel: '001',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: true),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Find the Reel field for r1
+      final reelFieldFinder = find.byKey(const ValueKey('r1_reel'));
+      expect(reelFieldFinder, findsOneWidget);
+
+      // Enter 'A002' into the reel field (should normalize to '002' and update project.defaultReel)
+      await tester.enterText(reelFieldFinder, 'A002');
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records[0].reel, '002');
+      expect(currentProject.defaultReel, '002');
+
+      // Now add a 'Nueva Toma' -> should inherit '002'
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Nueva Toma'));
+      await tester.pumpAndSettle();
+
+      expect(currentProject.log.records.length, 2);
+      expect(currentProject.log.records[1].reel, '002');
+    });
+
+    testWidgets('entering multiple characters into Reel field retains focus on Reel without jumping to Cap or Escena', (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      RenombrataProject currentProject = RenombrataProject(
+        log: ShootingLog(
+          metadata: ShootingLogMetadata.empty(),
+          records: [
+            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: ''),
+          ],
+        ),
+        defaultReel: '',
+        activeCamera: 'A',
+        cameraNames: ['A'],
+        showChapter: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                return BitacoraEditorTab(
+                  project: currentProject,
+                  settings: const AppSettings(usePagesStyleLayout: false),
+                  onProjectChanged: (updated) {
+                    setState(() {
+                      currentProject = updated;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final reelFinder = find.byKey(const ValueKey('r1_reel'));
+      expect(reelFinder, findsOneWidget);
+
+      // Focus the Reel field
+      await tester.tap(reelFinder);
+      await tester.pumpAndSettle();
+
+      final FocusNode? reelFocus = FocusManager.instance.primaryFocus;
+      expect(reelFocus, isNotNull);
+
+      // Sequentially enter multiple characters into Reel field
+      await tester.enterText(reelFinder, '0');
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus, equals(reelFocus));
+
+      await tester.enterText(reelFinder, '00');
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus, equals(reelFocus));
+
+      await tester.enterText(reelFinder, '002');
+      await tester.pumpAndSettle();
+      expect(FocusManager.instance.primaryFocus, equals(reelFocus));
+
+      // Value updated in project
+      expect(currentProject.log.records[0].reel, '002');
+
+      // Verify that Cap and Scene fields did not steal focus
+      final capFinder = find.byKey(const ValueKey('r1_cap'));
+      final capEditable = tester.widget<EditableText>(find.descendant(of: capFinder, matching: find.byType(EditableText)));
+      expect(capEditable.focusNode.hasFocus, isFalse);
+
+      final sceneFinder = find.byKey(const ValueKey('r1_scene'));
+      final sceneEditable = tester.widget<EditableText>(find.descendant(of: sceneFinder, matching: find.byType(EditableText)));
+      expect(sceneEditable.focusNode.hasFocus, isFalse);
+    });
+  });
 }
+

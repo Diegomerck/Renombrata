@@ -146,7 +146,7 @@ class BitacoraParserService {
         colObs = c;
       } else if (h.contains('REEL') || h.contains('ROLLO')) {
         colReel = c;
-        final rMatch = RegExp(r'(?:REEL|ROLLO)\s+(\d+)').firstMatch(h);
+        final rMatch = RegExp(r'(?:REEL|ROLLO)\s+([A-Za-z]?\d+)').firstMatch(h);
         if (rMatch != null) {
           headerReel ??= rMatch.group(1);
         }
@@ -342,12 +342,16 @@ class BitacoraParserService {
         processCam(entry.key, getCellString(entry.value, rowIndex));
       }
 
-      String reel = colReel >= 0 ? getCellString(colReel, rowIndex) : '';
+      String reel = colReel >= 0 ? getCellString(colReel, rowIndex).trim() : '';
       if (reel.isEmpty && headerReel != null && headerReel.isNotEmpty) {
-        reel = headerReel;
+        reel = headerReel.trim();
       }
       if (reel.isEmpty) {
         reel = '001';
+      }
+      final camReelMatch = RegExp(r'^[A-Za-z](\d+)$').firstMatch(reel);
+      if (camReelMatch != null) {
+        reel = camReelMatch.group(1)!;
       }
 
       String rawTcIn = colTcIn >= 0 ? getCellString(colTcIn, rowIndex) : '';

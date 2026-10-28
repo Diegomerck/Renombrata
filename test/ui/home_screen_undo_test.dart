@@ -139,7 +139,6 @@ void main() {
 
       await tester.tap(find.widgetWithText(FilledButton, 'Aplicar Coincidencias (1)'));
       await tester.pumpAndSettle();
-
       final homeState = tester.state(find.byType(HomeScreen)) as dynamic;
       expect((homeState.report as DryRunReport).proposals.first.proposedFileName, equals('PROD_01_01_T1_A001_D01_001_U1.MP4'));
 

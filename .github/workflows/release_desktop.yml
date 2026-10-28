@@ -34,6 +34,23 @@ jobs:
       - name: Run automated test suite
         run: flutter test
 
+      - name: Pre-fetch media_kit native binaries (ANGLE & libmpv)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "build/windows/x64"
+          $angleUrl = "https://github.com/alexmercerind/flutter-windows-ANGLE-OpenGL-ES/releases/download/v1.0.1/ANGLE.7z"
+          $mpvUrl = "https://github.com/media-kit/libmpv-win32-video-build/releases/download/2023-09-24/mpv-dev-x86_64-20230924-git-652a1dd.7z"
+          Write-Host "Downloading ANGLE.7z with curl..."
+          curl.exe -L --retry 5 --retry-delay 2 --retry-all-errors -o "build/windows/x64/ANGLE.7z" $angleUrl
+          Write-Host "Downloading libmpv with curl..."
+          curl.exe -L --retry 5 --retry-delay 2 --retry-all-errors -o "build/windows/x64/mpv-dev-x86_64-20230924-git-652a1dd.7z" $mpvUrl
+          
+          Write-Host "Validating MD5 checksums..."
+          $angleHash = (Get-FileHash -Path "build/windows/x64/ANGLE.7z" -Algorithm MD5).Hash
+          $mpvHash = (Get-FileHash -Path "build/windows/x64/mpv-dev-x86_64-20230924-git-652a1dd.7z" -Algorithm MD5).Hash
+          Write-Host "ANGLE MD5: $angleHash (Expected: E866F13E8D552348058AFAAFE869B1ED)"
+          Write-Host "libmpv MD5: $mpvHash (Expected: A832EF24B3A6FF97CD2560B5B9D04CD8)"
+
       - name: Build Windows executable
         run: flutter build windows --release
 

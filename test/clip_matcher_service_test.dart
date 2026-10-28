@@ -580,6 +580,9 @@ void main() {
 
     test('isReelMatched and hasReelDiscrepancy logic', () {
       expect(RenameProposal.isReelMatched('A001', 'A001'), isTrue);
+      expect(RenameProposal.isReelMatched('A001', '001'), isTrue);
+      expect(RenameProposal.isReelMatched('001', 'A001'), isTrue);
+      expect(RenameProposal.isReelMatched('A001', '002'), isFalse);
       expect(RenameProposal.isReelMatched('A007', 'A007_1'), isTrue);
       expect(RenameProposal.isReelMatched('A001', 'A007_1'), isFalse);
       expect(RenameProposal.isReelMatched('A001', 'B001'), isFalse);

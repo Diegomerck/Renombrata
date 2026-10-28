@@ -336,6 +336,12 @@ class RtfBitacoraParserService {
         camName = e.reel.substring(0, 1).toUpperCase();
       }
 
+      String cleanReel = e.reel.trim();
+      final camReelMatch = RegExp(r'^[A-Za-z](\d+)$').firstMatch(cleanReel);
+      if (camReelMatch != null) {
+        cleanReel = camReelMatch.group(1)!;
+      }
+
       final parsedClipInt = int.tryParse(e.clipIndex);
       final normalizedClip = parsedClipInt != null ? parsedClipInt.toString().padLeft(3, '0') : e.clipIndex;
 
@@ -348,7 +354,7 @@ class RtfBitacoraParserService {
         cameras: [
           CameraTakeRecord(cameraName: camName, clipName: normalizedClip),
         ],
-        reel: e.reel,
+        reel: cleanReel,
         isTf: isTf,
         isDs: e.isDs,
         isGpr: e.isGpr,
@@ -368,5 +374,14 @@ class RtfBitacoraParserService {
       ),
       records: records,
     );
+  }
+
+  /// Converts parsed convention [entries] into a list of [ShotRecord] models.
+  static List<ShotRecord> toShotRecords(
+    List<ParsedConventionEntry> entries, {
+    String production = '',
+    String date = '',
+  }) {
+    return toShootingLog(entries, production: production, date: date).records;
   }
 }

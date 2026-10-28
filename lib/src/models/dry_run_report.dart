@@ -91,6 +91,22 @@ class RenameProposal {
       }
     }
 
+    // Camera-agnostic comparison: If one reel is numeric (e.g. '001') and the other has a camera prefix (e.g. 'A001')
+    if (fileMatch != null && int.tryParse(logReel.trim()) != null) {
+      final fileNum = int.tryParse(fileMatch.group(2)!);
+      final logNum = int.tryParse(logReel.trim());
+      if (fileNum != null && logNum != null) {
+        return fileNum == logNum;
+      }
+    }
+    if (logMatch != null && int.tryParse(fileReel.trim()) != null) {
+      final logNum = int.tryParse(logMatch.group(2)!);
+      final fileNum = int.tryParse(fileReel.trim());
+      if (logNum != null && fileNum != null) {
+        return fileNum == logNum;
+      }
+    }
+
     final cleanFile = fileReel.replaceAll(RegExp(r'[^A-Za-z0-9]'), '').toUpperCase();
     final cleanLog = logReel.replaceAll(RegExp(r'[^A-Za-z0-9]'), '').toUpperCase();
     return cleanFile == cleanLog;

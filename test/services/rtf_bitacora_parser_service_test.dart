@@ -157,7 +157,7 @@ TODTA_2_14_T1_B001_D01_3_U1%B001_3_D01_U1
       expect(log.records[0].plane, '1');
       expect(log.records[0].take, '1');
       expect(log.records[0].isTf, isFalse);
-      expect(log.records[0].reel, 'A001');
+      expect(log.records[0].reel, '001');
 
       // Record 2 (Toma Falsa: TF2 -> clean take '2', isTf: true)
       expect(log.records[1].take, '2');
@@ -166,6 +166,23 @@ TODTA_2_14_T1_B001_D01_3_U1%B001_3_D01_U1
       // Record 3 (Observations populated from subConvention)
       expect(log.records[2].observations, 'B001_3_D01_U1');
       expect(log.records[2].cameras.first.cameraName, 'B');
+    });
+
+    test('toShotRecords produces camera-agnostic numeric reels from A001, B001 and preserves special tags', () {
+      final entries = RtfBitacoraParserService.parseLines('''
+TODTA_2_13_P1_T1_A001_D01_1_U1
+TODTA_2_14_T1_B001_D01_3_U1
+TODTA_2_15_T1_GPR1_D01_4_U1
+TODTA_2_16_T1_DR1_D01_5_U1
+TODTA_2_17_T1_NFF_D01_6_U1
+''');
+      final records = RtfBitacoraParserService.toShotRecords(entries);
+      expect(records.length, 5);
+      expect(records[0].reel, '001');
+      expect(records[1].reel, '001');
+      expect(records[2].reel, 'GPR1');
+      expect(records[3].reel, 'DR1');
+      expect(records[4].reel, 'NFF');
     });
   });
 }

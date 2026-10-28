@@ -1,4 +1,7 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:media_kit/media_kit.dart';
@@ -8,6 +11,15 @@ final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.system);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kDebugMode) {
+    try {
+      final tempDir = Directory.systemTemp.path;
+      final refFile = File(p.join(tempDir, 'com.alexmercerind.media_kit.NativeReferenceHolder.$pid'));
+      if (refFile.existsSync()) {
+        refFile.deleteSync();
+      }
+    } catch (_) {}
+  }
   MediaKit.ensureInitialized();
   await windowManager.ensureInitialized();
 

@@ -91,7 +91,8 @@ class _ConventionLineStatus {
   });
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
   RenombrataProject _project = RenombrataProject(
     log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
     defaultReel: '001',
@@ -182,7 +183,76 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _studioIsGpr = false;
   bool _studioIsDr = false;
 
-  final FocusNode _conventionEditorFocusNode = FocusNode();
+  final FocusNode _conventionEditorFocusNode = FocusNode(debugLabel: 'conventionEditor');
+  final FocusNode _studioChapterFocusNode = FocusNode(debugLabel: 'studioChapter');
+  final FocusNode _studioSceneFocusNode = FocusNode(debugLabel: 'studioScene');
+  final FocusNode _studioTakeFocusNode = FocusNode(debugLabel: 'studioTake');
+  final FocusNode _studioPlaneFocusNode = FocusNode(debugLabel: 'studioPlane');
+  final FocusNode _studioNotesFocusNode = FocusNode(debugLabel: 'studioNotes');
+  final FocusNode _studioWorkspaceFocusNode = FocusNode(debugLabel: 'studioWorkspace');
+  final FocusNode _studioMediaListFocusNode = FocusNode(debugLabel: 'studioMediaList');
+  final FocusNode _studioInspectorFocusNode = FocusNode(debugLabel: 'studioInspector');
+  final FocusNode _conventionEditorPanelFocusNode = FocusNode(debugLabel: 'conventionEditorPanel');
+
+  @visibleForTesting
+  FocusNode get studioWorkspaceFocusNode => _studioWorkspaceFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioMediaListFocusNode => _studioMediaListFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioInspectorFocusNode => _studioInspectorFocusNode;
+
+  @visibleForTesting
+  FocusNode get conventionEditorPanelFocusNode => _conventionEditorPanelFocusNode;
+
+  @visibleForTesting
+  FocusNode get conventionEditorFocusNode => _conventionEditorFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioChapterFocusNode => _studioChapterFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioSceneFocusNode => _studioSceneFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioTakeFocusNode => _studioTakeFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioPlaneFocusNode => _studioPlaneFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioNotesFocusNode => _studioNotesFocusNode;
+
+  @visibleForTesting
+  void focusFirstVisibleSlateField() => _focusFirstVisibleSlateField();
+
+  @visibleForTesting
+  void toggleStudioPlay() => _toggleStudioPlay();
+
+  @visibleForTesting
+  void seekStudioRelative(int seconds) => _seekStudioRelative(seconds);
+
+  @visibleForTesting
+  void selectPreviousStudioClip() => _selectPreviousStudioClip();
+
+  @visibleForTesting
+  void selectNextStudioClip() => _selectNextStudioClip();
+
+  @visibleForTesting
+  ({double mediaWidth, double conventionWidth}) calculateStudioPaneWidths(double totalWidth) {
+    if (totalWidth <= 1250) {
+      final t = ((totalWidth - 1100.0) / 150.0).clamp(0.0, 1.0);
+      final media = 280.0 + (330.0 - 280.0) * t;
+      final conv = 310.0 + (360.0 - 310.0) * t;
+      return (mediaWidth: media, conventionWidth: conv);
+    }
+    final centerTarget = (totalWidth * 0.44).clamp(680.0, 850.0);
+    final remainder = totalWidth - centerTarget - 24.0;
+    final mediaWidth = (remainder * 0.42).clamp(340.0, 520.0);
+    final conventionWidth = (remainder - mediaWidth).clamp(380.0, 600.0);
+    return (mediaWidth: mediaWidth, conventionWidth: conventionWidth);
+  }
 
   @visibleForTesting
   bool get isStudioMode => _isStudioMode;
@@ -192,6 +262,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @visibleForTesting
   DryRunReport? get previousReportBeforePaste => _previousReportBeforePaste;
+
+  @visibleForTesting
+  set previousReportBeforePaste(DryRunReport? value) => _previousReportBeforePaste = value;
 
   @visibleForTesting
   DryRunReport? get report => _report;
@@ -233,6 +306,9 @@ class _HomeScreenState extends State<HomeScreen> {
   TextEditingController get conventionEditorController => _conventionEditorController;
 
   @visibleForTesting
+  UndoHistoryController get conventionEditorUndoController => _conventionEditorUndoController;
+
+  @visibleForTesting
   void onConventionTextChanged(String text) => _onConventionTextChanged(text);
 
   final TextEditingController _reelController = TextEditingController(text: '001');
@@ -242,6 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ScrollController _conventionLineStatusScrollController = ScrollController();
   bool _showConventionEditorPane = false;
   final TextEditingController _conventionEditorController = TextEditingController();
+  final UndoHistoryController _conventionEditorUndoController = UndoHistoryController();
   Map<String, String> _livePastedOverrides = {};
   Map<String, int> _livePastedLineNumbers = {};
   Map<String, String> _duplicateClipConflicts = {};
@@ -261,7 +338,19 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
     _reelController.text = _project.defaultReel;
-    _initStudioPlayer();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index == 0) {
+        _disposeStudioPlayer();
+      }
+    });
+    _studioMediaListFocusNode.addListener(_onStudioFocusChanged);
+    _studioInspectorFocusNode.addListener(_onStudioFocusChanged);
+    _conventionEditorPanelFocusNode.addListener(_onStudioFocusChanged);
+    _conventionEditorFocusNode.addListener(_onStudioFocusChanged);
+    if (widget.customStudioPlayer != null) {
+      _initStudioPlayer();
+    }
     SettingsService.loadSettings().then((s) {
       if (mounted) {
         setState(() {
@@ -269,6 +358,10 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     });
+  }
+
+  void _onStudioFocusChanged() {
+    if (mounted) setState(() {});
   }
 
   void _initStudioPlayer() {
@@ -407,26 +500,46 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  @override
-  void dispose() {
+  void _disposeStudioPlayer() {
     for (final sub in _studioSubscriptions) {
       sub.cancel();
     }
     _studioSubscriptions.clear();
-
     try {
       _studioPlayer?.pause();
+      _studioVideoController = null;
       _studioPlayer?.dispose();
+      _studioPlayer = null;
     } catch (e) {
       debugPrint('Error disposing studio player: $e');
     }
+  }
+
+  @override
+  void dispose() {
+    _disposeStudioPlayer();
+    _tabController.dispose();
 
     _reelController.dispose();
     _horizontalTableScrollController.dispose();
     _verticalTableScrollController.dispose();
     _studioMediaListScrollController.dispose();
     _conventionLineStatusScrollController.dispose();
+    _studioMediaListFocusNode.removeListener(_onStudioFocusChanged);
+    _studioInspectorFocusNode.removeListener(_onStudioFocusChanged);
+    _conventionEditorPanelFocusNode.removeListener(_onStudioFocusChanged);
+    _conventionEditorFocusNode.removeListener(_onStudioFocusChanged);
+    _studioMediaListFocusNode.dispose();
+    _studioInspectorFocusNode.dispose();
+    _conventionEditorPanelFocusNode.dispose();
+    _studioWorkspaceFocusNode.dispose();
+    _studioChapterFocusNode.dispose();
+    _studioSceneFocusNode.dispose();
+    _studioPlaneFocusNode.dispose();
+    _studioTakeFocusNode.dispose();
+    _studioNotesFocusNode.dispose();
     _conventionEditorController.dispose();
+    _conventionEditorUndoController.dispose();
     _conventionEditorFocusNode.dispose();
     _studioZoomController.dispose();
     _studioPositionNotifier.dispose();
@@ -472,6 +585,9 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _project = newProject;
       _isDirty = true;
+      if (_reelController.text != newProject.defaultReel) {
+        _reelController.text = newProject.defaultReel;
+      }
     });
     // Auto-generate preview if tab is on renamer
     _generatePreview();
@@ -1304,6 +1420,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ? '$appliedCount nombres aplicados ($conflictsCount pendientes de resolver)'
         : '$appliedCount nombres aplicados';
 
+    _conventionEditorPanelFocusNode.requestFocus();
     _showNotification(message);
   }
 
@@ -1335,12 +1452,24 @@ class _HomeScreenState extends State<HomeScreen> {
         .length;
 
     final theme = Theme.of(context);
+    final hasFocus = _conventionEditorPanelFocusNode.hasFocus || _conventionEditorFocusNode.hasFocus;
 
     return SizedBox(
       width: width,
-      child: Card(
-        elevation: 2,
-        child: Padding(
+      child: Focus(
+        focusNode: _conventionEditorPanelFocusNode,
+        child: Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: hasFocus
+                  ? theme.colorScheme.primary
+                  : theme.dividerColor.withValues(alpha: 0.2),
+              width: 1.5,
+            ),
+          ),
+          child: Padding(
           padding: const EdgeInsets.all(12.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1381,6 +1510,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: TextField(
                   key: const ValueKey('studio_convention_editor_field'),
                   controller: _conventionEditorController,
+                  undoController: _conventionEditorUndoController,
                   focusNode: _conventionEditorFocusNode,
                   enableInteractiveSelection: true,
                   maxLines: null,
@@ -1558,8 +1688,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   bool _isPlayableVideo(String? filePath) {
     if (filePath == null) return false;
@@ -1707,9 +1838,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _highlightMatchingConventionLine(proposal);
 
     final path = proposal.originalFilePath;
-    if (path != null && _isPlayableVideo(path) && _studioPlayer != null) {
+    if (path != null && _isPlayableVideo(path)) {
+      if (_studioPlayer == null) {
+        _initStudioPlayer();
+      }
       try {
-        _studioPlayer!.open(Media(path));
+        _studioPlayer?.open(Media(path));
       } catch (e) {
         debugPrint('Error playing studio media: $e');
       }
@@ -1773,7 +1907,6 @@ class _HomeScreenState extends State<HomeScreen> {
           baseOffset: lineStart,
           extentOffset: cleanEnd,
         );
-        _conventionEditorFocusNode.requestFocus();
         break;
       }
 
@@ -2092,10 +2225,22 @@ class _HomeScreenState extends State<HomeScreen> {
     final mediaClips = _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final hasFocus = _studioMediaListFocusNode.hasFocus;
 
-    return Card(
-      elevation: 2,
-      child: Column(
+    return Focus(
+      focusNode: _studioMediaListFocusNode,
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: hasFocus
+                ? theme.colorScheme.primary
+                : theme.dividerColor.withValues(alpha: 0.2),
+            width: 1.5,
+          ),
+        ),
+        child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
@@ -2155,7 +2300,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       return InkWell(
                         key: ValueKey('studio_clip_$i'),
-                        onTap: () => _selectStudioClip(clip),
+                        onTap: () {
+                          _studioMediaListFocusNode.requestFocus();
+                          _selectStudioClip(clip);
+                        },
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                           decoration: BoxDecoration(
@@ -2218,29 +2366,43 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildStudioCenterInspector() {
     final theme = Theme.of(context);
     final clip = _selectedStudioClip;
+    final hasFocus = _studioInspectorFocusNode.hasFocus;
 
     if (clip == null) {
-      return Card(
-        elevation: 2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.video_library_outlined, size: 56, color: theme.hintColor.withValues(alpha: 0.5)),
-              const SizedBox(height: 12),
-              const Text('Ningún clip seleccionado', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              const SizedBox(height: 4),
-              Text(
-                'Selecciona un archivo de la lista izquierda para previsualizarlo e inspeccionar su claqueta.',
-                style: TextStyle(color: theme.hintColor, fontSize: 12),
-              ),
-            ],
+      return Focus(
+        focusNode: _studioInspectorFocusNode,
+        child: Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: hasFocus
+                  ? theme.colorScheme.primary
+                  : theme.dividerColor.withValues(alpha: 0.2),
+              width: 1.5,
+            ),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.video_library_outlined, size: 56, color: theme.hintColor.withValues(alpha: 0.5)),
+                const SizedBox(height: 12),
+                const Text('Ningún clip seleccionado', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                const SizedBox(height: 4),
+                Text(
+                  'Selecciona un archivo de la lista izquierda para previsualizarlo e inspeccionar su claqueta.',
+                  style: TextStyle(color: theme.hintColor, fontSize: 12),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -2261,9 +2423,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _project.showGpr ||
         _project.showDr;
 
-    return Card(
-      elevation: 2,
-      child: Padding(
+    return Focus(
+      focusNode: _studioInspectorFocusNode,
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: hasFocus
+                ? theme.colorScheme.primary
+                : theme.dividerColor.withValues(alpha: 0.2),
+            width: 1.5,
+          ),
+        ),
+        child: Padding(
         padding: const EdgeInsets.all(12.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2321,6 +2494,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                         child: GestureDetector(
                           key: const ValueKey('studio_video_gesture_detector'),
+                          onTap: () => _studioWorkspaceFocusNode.requestFocus(),
                           onDoubleTap: _resetStudioZoom,
                           child: MouseRegion(
                             cursor: _studioCurrentZoom > 1.05
@@ -2342,35 +2516,33 @@ class _HomeScreenState extends State<HomeScreen> {
                               boundaryMargin: const EdgeInsets.all(600),
                               clipBehavior: Clip.none,
                               child: Center(
-                                child: AspectRatio(
-                                  aspectRatio: 16 / 9,
-                                  child: hasVideo
-                                      ? Video(
-                                          controller: _studioVideoController!,
-                                          controls: NoVideoControls,
-                                        )
-                                      : Container(
-                                          color: Colors.black,
-                                          child: Center(
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(Icons.movie_filter_rounded, size: 52, color: Colors.white38),
-                                                const SizedBox(height: 8),
-                                                Text(
-                                                  originalName,
-                                                  style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  'Timecode: $tcIn → $tcOut',
-                                                  style: const TextStyle(fontFamily: 'monospace', color: Colors.white54, fontSize: 11),
-                                                ),
-                                              ],
-                                            ),
+                                child: hasVideo
+                                    ? Video(
+                                        controller: _studioVideoController!,
+                                        controls: NoVideoControls,
+                                        fit: BoxFit.contain,
+                                      )
+                                    : Container(
+                                        color: Colors.black,
+                                        child: Center(
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.movie_filter_rounded, size: 52, color: Colors.white38),
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                originalName,
+                                                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                'Timecode: $tcIn → $tcOut',
+                                                style: const TextStyle(fontFamily: 'monospace', color: Colors.white54, fontSize: 11),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                ),
+                                      ),
                               ),
                             ),
                           ),
@@ -2505,179 +2677,192 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
                     },
                   ),
-                  Row(
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    runSpacing: 4,
                     children: [
-                      // Play / Pause
-                      ValueListenableBuilder<bool>(
-                        valueListenable: _studioIsPlayingNotifier,
-                        builder: (context, isPlaying, _) {
-                          return IconButton(
-                            key: const ValueKey('studio_play_pause_button'),
-                            icon: Icon(
-                              isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                              size: 24,
-                              color: theme.colorScheme.primary,
-                            ),
-                            tooltip: isPlaying ? 'Pausar' : 'Reproducir',
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Play / Pause
+                          ValueListenableBuilder<bool>(
+                            valueListenable: _studioIsPlayingNotifier,
+                            builder: (context, isPlaying, _) {
+                              return IconButton(
+                                key: const ValueKey('studio_play_pause_button'),
+                                icon: Icon(
+                                  isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                                  size: 22,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                tooltip: isPlaying ? 'Pausar' : 'Reproducir',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () {
+                                  if (_studioPlayer != null) {
+                                    _studioPlayer!.playOrPause();
+                                  } else {
+                                    _studioIsPlayingNotifier.value = !_studioIsPlayingNotifier.value;
+                                  }
+                                },
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          // 5s jump back
+                          IconButton(
+                            key: const ValueKey('studio_replay_5_button'),
+                            icon: const Icon(Icons.replay_5, size: 18),
+                            tooltip: 'Retroceder 5s',
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
                             onPressed: () {
-                              if (_studioPlayer != null) {
-                                _studioPlayer!.playOrPause();
-                              } else {
-                                _studioIsPlayingNotifier.value = !_studioIsPlayingNotifier.value;
-                              }
+                              final target = _studioPositionNotifier.value - const Duration(seconds: 5);
+                              final clamped = target < Duration.zero ? Duration.zero : target;
+                              _studioPlayer?.seek(clamped);
+                              _studioPositionNotifier.value = clamped;
                             },
-                          );
-                        },
+                          ),
+                          const SizedBox(width: 4),
+                          // 5s jump forward
+                          IconButton(
+                            key: const ValueKey('studio_forward_5_button'),
+                            icon: const Icon(Icons.forward_5, size: 18),
+                            tooltip: 'Avanzar 5s',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              final max = _studioDurationNotifier.value;
+                              final target = _studioPositionNotifier.value + const Duration(seconds: 5);
+                              final clamped = max > Duration.zero && target > max ? max : target;
+                              _studioPlayer?.seek(clamped);
+                              _studioPositionNotifier.value = clamped;
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          // Elapsed / Duration text
+                          ValueListenableBuilder<Duration>(
+                            valueListenable: _studioDurationNotifier,
+                            builder: (context, duration, _) {
+                              return ValueListenableBuilder<Duration>(
+                                valueListenable: _studioPositionNotifier,
+                                builder: (context, position, _) {
+                                  return Text(
+                                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                                    key: const ValueKey('studio_duration_text'),
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10.5,
+                                      color: theme.hintColor,
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ],
                       ),
                       const SizedBox(width: 8),
-                      // 5s jump back
-                      IconButton(
-                        key: const ValueKey('studio_replay_5_button'),
-                        icon: const Icon(Icons.replay_5, size: 20),
-                        tooltip: 'Retroceder 5s',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () {
-                          final target = _studioPositionNotifier.value - const Duration(seconds: 5);
-                          final clamped = target < Duration.zero ? Duration.zero : target;
-                          _studioPlayer?.seek(clamped);
-                          _studioPositionNotifier.value = clamped;
-                        },
-                      ),
-                      const SizedBox(width: 4),
-                      // 5s jump forward
-                      IconButton(
-                        key: const ValueKey('studio_forward_5_button'),
-                        icon: const Icon(Icons.forward_5, size: 20),
-                        tooltip: 'Avanzar 5s',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () {
-                          final max = _studioDurationNotifier.value;
-                          final target = _studioPositionNotifier.value + const Duration(seconds: 5);
-                          final clamped = max > Duration.zero && target > max ? max : target;
-                          _studioPlayer?.seek(clamped);
-                          _studioPositionNotifier.value = clamped;
-                        },
-                      ),
-                      const SizedBox(width: 10),
-                      // Elapsed / Duration text
-                      ValueListenableBuilder<Duration>(
-                        valueListenable: _studioDurationNotifier,
-                        builder: (context, duration, _) {
-                          return ValueListenableBuilder<Duration>(
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Live Running SMPTE Timecode Badge
+                          ValueListenableBuilder<Duration>(
                             valueListenable: _studioPositionNotifier,
                             builder: (context, position, _) {
-                              return Text(
-                                '${_formatDuration(position)} / ${_formatDuration(duration)}',
-                                key: const ValueKey('studio_duration_text'),
-                                style: TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontSize: 11,
-                                  color: theme.hintColor,
+                              final liveSmpte = _computeLiveSmpte(position, clip.fileTcIn, _project.log.metadata.frameRate);
+                              return Container(
+                                key: const ValueKey('studio_live_smpte_badge'),
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primaryContainer.withValues(alpha: 0.5),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.3)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.access_time_rounded, size: 11, color: theme.colorScheme.primary),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      'SMPTE: $liveSmpte',
+                                      style: TextStyle(
+                                        color: theme.colorScheme.primary,
+                                        fontFamily: 'monospace',
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               );
                             },
-                          );
-                        },
-                      ),
-                      const Spacer(),
-                      // Live Running SMPTE Timecode Badge
-                      ValueListenableBuilder<Duration>(
-                        valueListenable: _studioPositionNotifier,
-                        builder: (context, position, _) {
-                          final liveSmpte = _computeLiveSmpte(position, clip.fileTcIn, _project.log.metadata.frameRate);
-                          return Container(
-                            key: const ValueKey('studio_live_smpte_badge'),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.5),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.3)),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.access_time_rounded, size: 12, color: theme.colorScheme.primary),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'SMPTE: $liveSmpte',
-                                  style: TextStyle(
-                                    color: theme.colorScheme.primary,
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(width: 10),
-                      // Volume toggle & slider
-                      ValueListenableBuilder<bool>(
-                        valueListenable: _studioIsMutedNotifier,
-                        builder: (context, isMuted, _) {
-                          return ValueListenableBuilder<double>(
-                            valueListenable: _studioVolumeNotifier,
-                            builder: (context, volume, _) {
-                              return Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    key: const ValueKey('studio_volume_button'),
-                                    icon: Icon(
-                                      isMuted || volume <= 0.0
-                                          ? Icons.volume_off
-                                          : (volume < 50 ? Icons.volume_down : Icons.volume_up),
-                                      size: 18,
-                                    ),
-                                    tooltip: isMuted ? 'Activar sonido' : 'Silenciar',
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(),
-                                    onPressed: () {
-                                      if (isMuted) {
-                                        final target = _studioPreMuteVolume > 0 ? _studioPreMuteVolume : 100.0;
-                                        _studioPlayer?.setVolume(target);
-                                        _studioVolumeNotifier.value = target;
-                                        _studioIsMutedNotifier.value = false;
-                                      } else {
-                                        _studioPreMuteVolume = volume;
-                                        _studioPlayer?.setVolume(0.0);
-                                        _studioVolumeNotifier.value = 0.0;
-                                        _studioIsMutedNotifier.value = true;
-                                      }
-                                    },
-                                  ),
-                                  SizedBox(
-                                    width: 60,
-                                    child: SliderTheme(
-                                      data: SliderTheme.of(context).copyWith(
-                                        trackHeight: 2,
-                                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 3),
-                                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 6),
-                                      ),
-                                      child: Slider(
-                                        key: const ValueKey('studio_volume_slider'),
-                                        value: volume.clamp(0.0, 100.0),
-                                        min: 0.0,
-                                        max: 100.0,
-                                        onChanged: (val) {
-                                          _studioPlayer?.setVolume(val);
-                                          _studioVolumeNotifier.value = val;
-                                          _studioIsMutedNotifier.value = val <= 0.0;
+                          ),
+                          const SizedBox(width: 6),
+                          // Volume toggle & slider
+                          ValueListenableBuilder<bool>(
+                            valueListenable: _studioIsMutedNotifier,
+                            builder: (context, isMuted, _) {
+                              return ValueListenableBuilder<double>(
+                                valueListenable: _studioVolumeNotifier,
+                                builder: (context, volume, _) {
+                                  return Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        key: const ValueKey('studio_volume_button'),
+                                        icon: Icon(
+                                          isMuted || volume <= 0.0
+                                              ? Icons.volume_off
+                                              : (volume < 50 ? Icons.volume_down : Icons.volume_up),
+                                          size: 16,
+                                        ),
+                                        tooltip: isMuted ? 'Activar sonido' : 'Silenciar',
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        onPressed: () {
+                                          if (isMuted) {
+                                            final target = _studioPreMuteVolume > 0 ? _studioPreMuteVolume : 100.0;
+                                            _studioPlayer?.setVolume(target);
+                                            _studioVolumeNotifier.value = target;
+                                            _studioIsMutedNotifier.value = false;
+                                          } else {
+                                            _studioPreMuteVolume = volume;
+                                            _studioPlayer?.setVolume(0.0);
+                                            _studioVolumeNotifier.value = 0.0;
+                                            _studioIsMutedNotifier.value = true;
+                                          }
                                         },
                                       ),
-                                    ),
-                                  ),
-                                ],
+                                      SizedBox(
+                                        width: 48,
+                                        child: SliderTheme(
+                                          data: SliderTheme.of(context).copyWith(
+                                            trackHeight: 2,
+                                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 3),
+                                            overlayShape: const RoundSliderOverlayShape(overlayRadius: 6),
+                                          ),
+                                          child: Slider(
+                                            key: const ValueKey('studio_volume_slider'),
+                                            value: volume.clamp(0.0, 100.0),
+                                            min: 0.0,
+                                            max: 100.0,
+                                            onChanged: (val) {
+                                              _studioPlayer?.setVolume(val);
+                                              _studioVolumeNotifier.value = val;
+                                              _studioIsMutedNotifier.value = val <= 0.0;
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               );
                             },
-                          );
-                        },
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -2706,25 +2891,28 @@ class _HomeScreenState extends State<HomeScreen> {
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                       ),
                       const SizedBox(width: 8),
-                      Container(
-                        key: const ValueKey('studio_static_tc_badge'),
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.2)),
-                        ),
-                        child: Text(
-                          'TC: $tcIn → $tcOut',
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: theme.colorScheme.primary,
+                      Flexible(
+                        child: Container(
+                          key: const ValueKey('studio_static_tc_badge'),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.2)),
+                          ),
+                          child: Text(
+                            'TC: $tcIn → $tcOut',
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.primary,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
-                      const Spacer(),
+                      const SizedBox(width: 8),
                       ElevatedButton.icon(
                         icon: const Icon(Icons.save, size: 14),
                         label: const Text('Guardar'),
@@ -2745,6 +2933,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           flex: 2,
                           child: TextField(
                             controller: _studioChapterController,
+                            focusNode: _studioChapterFocusNode,
                             decoration: const InputDecoration(
                               labelText: 'Cap',
                               isDense: true,
@@ -2761,6 +2950,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         flex: 2,
                         child: TextField(
                           controller: _studioSceneController,
+                          focusNode: _studioSceneFocusNode,
                           decoration: const InputDecoration(
                             labelText: 'Escena',
                             isDense: true,
@@ -2776,6 +2966,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         flex: 2,
                         child: TextField(
                           controller: _studioTakeController,
+                          focusNode: _studioTakeFocusNode,
                           decoration: const InputDecoration(
                             labelText: 'Toma',
                             isDense: true,
@@ -2792,6 +2983,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           flex: 2,
                           child: TextField(
                             controller: _studioPlaneController,
+                            focusNode: _studioPlaneFocusNode,
                             decoration: const InputDecoration(
                               labelText: 'Plano',
                               isDense: true,
@@ -2807,70 +2999,59 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   if (hasVisibleFlags) ...[
                     const SizedBox(height: 8),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          if (_project.showMos) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_mos',
-                              label: 'MOS',
-                              selected: _studioIsMos,
-                              onSelected: (val) => setState(() => _studioIsMos = val),
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (_project.showTf) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_tf',
-                              label: 'TF (Toma Falsa)',
-                              selected: _studioIsTf,
-                              onSelected: (val) => setState(() => _studioIsTf = val),
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (_project.showDs) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_ds',
-                              label: 'DS (Driving Shot)',
-                              selected: _studioIsDs,
-                              onSelected: (val) => setState(() => _studioIsDs = val),
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (_project.showFf) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_ff',
-                              label: 'FF (Free Fly)',
-                              selected: _studioIsFf,
-                              onSelected: (val) => setState(() => _studioIsFf = val),
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (_project.showGpr) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_gpr',
-                              label: 'GPR (GoPro)',
-                              selected: _studioIsGpr,
-                              onSelected: (val) => setState(() => _studioIsGpr = val),
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (_project.showDr) ...[
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_dr',
-                              label: 'DR (Drone)',
-                              selected: _studioIsDr,
-                              onSelected: (val) => setState(() => _studioIsDr = val),
-                            ),
-                          ],
-                        ],
-                      ),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        if (_project.showMos)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_mos',
+                            label: 'MOS',
+                            selected: _studioIsMos,
+                            onSelected: (val) => setState(() => _studioIsMos = val),
+                          ),
+                        if (_project.showTf)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_tf',
+                            label: 'TF (Toma Falsa)',
+                            selected: _studioIsTf,
+                            onSelected: (val) => setState(() => _studioIsTf = val),
+                          ),
+                        if (_project.showDs)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_ds',
+                            label: 'DS (Driving Shot)',
+                            selected: _studioIsDs,
+                            onSelected: (val) => setState(() => _studioIsDs = val),
+                          ),
+                        if (_project.showFf)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_ff',
+                            label: 'FF (Free Fly)',
+                            selected: _studioIsFf,
+                            onSelected: (val) => setState(() => _studioIsFf = val),
+                          ),
+                        if (_project.showGpr)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_gpr',
+                            label: 'GPR (GoPro)',
+                            selected: _studioIsGpr,
+                            onSelected: (val) => setState(() => _studioIsGpr = val),
+                          ),
+                        if (_project.showDr)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_dr',
+                            label: 'DR (Drone)',
+                            selected: _studioIsDr,
+                            onSelected: (val) => setState(() => _studioIsDr = val),
+                          ),
+                      ],
                     ),
                   ],
                   const SizedBox(height: 8),
                   TextField(
                     controller: _studioNotesController,
+                    focusNode: _studioNotesFocusNode,
                     maxLines: 1,
                     decoration: const InputDecoration(
                       labelText: 'Observaciones / Notas',
@@ -2886,8 +3067,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildStudioFlagChip({
     required String key,
@@ -2906,31 +3088,218 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStudioWorkspace() {
-    final isMediaRight = _appSettings.renamerPaneLayout == 'media_right';
+  bool get _isTextFieldFocused {
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary == null) return false;
+    if (primary == _conventionEditorFocusNode ||
+        primary == _studioChapterFocusNode ||
+        primary == _studioSceneFocusNode ||
+        primary == _studioPlaneFocusNode ||
+        primary == _studioTakeFocusNode ||
+        primary == _studioNotesFocusNode) {
+      return true;
+    }
+    final ctx = primary.context;
+    if (ctx != null) {
+      if (ctx.widget is EditableText ||
+          ctx.findAncestorWidgetOfExactType<EditableText>() != null) {
+        return true;
+      }
+    }
+    return false;
+  }
 
-    if (isMediaRight) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildConventionEditorPane(width: 360),
-          const SizedBox(width: 12),
-          Expanded(child: _buildStudioCenterInspector()),
-          const SizedBox(width: 12),
-          SizedBox(width: 330, child: _buildStudioMediaList()),
-        ],
-      );
+  void _toggleStudioPlay() {
+    if (_studioPlayer != null) {
+      _studioPlayer!.playOrPause();
+    } else {
+      _studioIsPlayingNotifier.value = !_studioIsPlayingNotifier.value;
+    }
+  }
+
+  void _seekStudioRelative(int seconds) {
+    final current = _studioPositionNotifier.value;
+    final duration = _studioDurationNotifier.value;
+    final delta = Duration(seconds: seconds);
+    var target = current + delta;
+    if (target < Duration.zero) {
+      target = Duration.zero;
+    } else if (duration > Duration.zero && target > duration) {
+      target = duration;
+    }
+    _studioPlayer?.seek(target);
+    _studioPositionNotifier.value = target;
+  }
+
+  List<RenameProposal> get _studioMediaClips =>
+      _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
+
+  void _selectPreviousStudioClip() {
+    final clips = _studioMediaClips;
+    if (clips.isEmpty) return;
+    if (_selectedStudioClip == null) {
+      _selectStudioClip(clips.first);
+      return;
+    }
+    final currentIndex = clips.indexWhere(
+      (c) => c.originalFilePath == _selectedStudioClip!.originalFilePath,
+    );
+    if (currentIndex > 0) {
+      final prevIndex = currentIndex - 1;
+      _selectStudioClip(clips[prevIndex]);
+      _scrollStudioClipIntoView(prevIndex);
+    }
+  }
+
+  void _selectNextStudioClip() {
+    final clips = _studioMediaClips;
+    if (clips.isEmpty) return;
+    if (_selectedStudioClip == null) {
+      _selectStudioClip(clips.first);
+      return;
+    }
+    final currentIndex = clips.indexWhere(
+      (c) => c.originalFilePath == _selectedStudioClip!.originalFilePath,
+    );
+    if (currentIndex >= 0 && currentIndex < clips.length - 1) {
+      final nextIndex = currentIndex + 1;
+      _selectStudioClip(clips[nextIndex]);
+      _scrollStudioClipIntoView(nextIndex);
+    }
+  }
+
+  void _scrollStudioClipIntoView(int index) {
+    if (!_studioMediaListScrollController.hasClients) return;
+    final targetOffset = (index * 52.0).clamp(
+      0.0,
+      _studioMediaListScrollController.position.maxScrollExtent,
+    );
+    _studioMediaListScrollController.animateTo(
+      targetOffset,
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _focusFirstVisibleSlateField() {
+    if (_project.showChapter) {
+      _studioChapterFocusNode.requestFocus();
+    } else {
+      _studioSceneFocusNode.requestFocus();
+    }
+  }
+
+  KeyEventResult _handleStudioWorkspaceKeyEvent(FocusNode node, KeyEvent event) {
+    final isDown = event is KeyDownEvent;
+    final isRepeat = event is KeyRepeatEvent;
+    final isAction = isDown || isRepeat;
+
+    final isCtrlOrMeta = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+
+    // Global Navigation Shortcuts (functional from any state)
+    if (isDown && event.logicalKey == LogicalKeyboardKey.keyE && isCtrlOrMeta) {
+      _conventionEditorFocusNode.requestFocus();
+      return KeyEventResult.handled;
     }
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(width: 330, child: _buildStudioMediaList()),
-        const SizedBox(width: 12),
-        Expanded(child: _buildStudioCenterInspector()),
-        const SizedBox(width: 12),
-        _buildConventionEditorPane(width: 360),
-      ],
+    if (isDown && event.logicalKey == LogicalKeyboardKey.keyB && isCtrlOrMeta) {
+      _focusFirstVisibleSlateField();
+      return KeyEventResult.handled;
+    }
+
+    if (isDown && event.logicalKey == LogicalKeyboardKey.escape) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      _studioWorkspaceFocusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+
+    // If focus is in a textfield, do NOT intercept text typing or cursor navigation
+    if (_isTextFieldFocused) {
+      return KeyEventResult.ignored;
+    }
+
+    // Workspace / Playback Shortcuts
+    if (event.logicalKey == LogicalKeyboardKey.space) {
+      if (isDown) {
+        _toggleStudioPlay();
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (isDown && event.logicalKey == LogicalKeyboardKey.tab) {
+      _focusFirstVisibleSlateField();
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      _seekStudioRelative(-2);
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      _seekStudioRelative(2);
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      _selectPreviousStudioClip();
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      _selectNextStudioClip();
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  Widget _buildStudioWorkspace() {
+    return Focus(
+      focusNode: _studioWorkspaceFocusNode,
+      autofocus: true,
+      onKeyEvent: _handleStudioWorkspaceKeyEvent,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final totalWidth = constraints.maxWidth;
+          final isMediaRight = _appSettings.renamerPaneLayout == 'media_right';
+
+          final widths = calculateStudioPaneWidths(totalWidth);
+          final mediaWidth = widths.mediaWidth;
+          final conventionWidth = widths.conventionWidth;
+
+          final mediaWidget = SizedBox(
+            width: mediaWidth,
+            child: _buildStudioMediaList(),
+          );
+          final conventionWidget = _buildConventionEditorPane(
+            width: conventionWidth,
+          );
+          final centerWidget = Expanded(
+            child: _buildStudioCenterInspector(),
+          );
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: isMediaRight
+                ? [
+                    conventionWidget,
+                    const SizedBox(width: 12),
+                    centerWidget,
+                    const SizedBox(width: 12),
+                    mediaWidget,
+                  ]
+                : [
+                    mediaWidget,
+                    const SizedBox(width: 12),
+                    centerWidget,
+                    const SizedBox(width: 12),
+                    conventionWidget,
+                  ],
+          );
+        },
+      ),
     );
   }
 
@@ -3087,9 +3456,15 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 16),
           ],
           bottom: TabBar(
+            controller: _tabController,
             indicatorColor: const Color(0xFF6366F1),
             labelColor: isDark ? Colors.white : const Color(0xFF4F46E5),
             unselectedLabelColor: isDark ? const Color(0xFF8E8E9F) : const Color(0xFF64748B),
+            onTap: (index) {
+              if (index == 0) {
+                _disposeStudioPlayer();
+              }
+            },
             tabs: const [
               Tab(icon: Icon(Icons.edit_document), text: 'Bitácora Digital'),
               Tab(icon: Icon(Icons.sync), text: 'Renombrador de Medios'),
@@ -3099,11 +3474,25 @@ class _HomeScreenState extends State<HomeScreen> {
         body: CallbackShortcuts(
           bindings: <ShortcutActivator, VoidCallback>{
             const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () {
+              if (_isTextFieldFocused) {
+                final primary = FocusManager.instance.primaryFocus;
+                if (primary?.context != null) {
+                  Actions.maybeInvoke(primary!.context!, const UndoTextIntent(SelectionChangedCause.keyboard));
+                }
+                return;
+              }
               if (_previousReportBeforePaste != null) {
                 _undoPastedMatches();
               }
             },
             const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () {
+              if (_isTextFieldFocused) {
+                final primary = FocusManager.instance.primaryFocus;
+                if (primary?.context != null) {
+                  Actions.maybeInvoke(primary!.context!, const UndoTextIntent(SelectionChangedCause.keyboard));
+                }
+                return;
+              }
               if (_previousReportBeforePaste != null) {
                 _undoPastedMatches();
               }
@@ -3126,6 +3515,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       _buildNotificationBanner(),
                       Expanded(
                         child: TabBarView(
+                          controller: _tabController,
                           children: [
                             // Tab 1: Editor
                             BitacoraEditorTab(

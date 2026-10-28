@@ -596,13 +596,31 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     final tcIn = _timecodeService.isAutoStampEnabled
         ? _timecodeService.currentFormattedTimecodeZeroFrames
         : '';
+
+    final records = widget.project.log.records;
+    String inheritedReel = widget.project.defaultReel.trim().isNotEmpty
+        ? widget.project.defaultReel.trim()
+        : '001';
+    for (int i = records.length - 1; i >= 0; i--) {
+      final r = records[i].reel.trim();
+      if (r.isNotEmpty) {
+        inheritedReel = r;
+        break;
+      }
+    }
+    // Normalize inherited reel just in case
+    final camMatch = RegExp(r'^[A-Za-z](\d+)$').firstMatch(inheritedReel);
+    if (camMatch != null) {
+      inheritedReel = camMatch.group(1)!;
+    }
+
     final newRecord = ShotRecord(
       chapter: '',
       scene: '',
       plane: '',
       take: '1',
       cameras: [],
-      reel: widget.project.defaultReel.isNotEmpty ? widget.project.defaultReel : '001',
+      reel: inheritedReel,
       tcIn: tcIn,
     );
     final newRecords = List<ShotRecord>.from(widget.project.log.records);
@@ -623,6 +641,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _activeAutofocusNode == focusNode) {
         focusNode.requestFocus();
+        _autofocusFieldId = null;
       }
     });
   }
@@ -643,9 +662,28 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         ? _timecodeService.currentFormattedTimecodeZeroFrames
         : '';
 
+    String effectiveReel = lastRecord.reel.trim();
+    if (effectiveReel.isEmpty) {
+      effectiveReel = widget.project.defaultReel.trim().isNotEmpty
+          ? widget.project.defaultReel.trim()
+          : '001';
+      for (int i = records.length - 1; i >= 0; i--) {
+        final r = records[i].reel.trim();
+        if (r.isNotEmpty) {
+          effectiveReel = r;
+          break;
+        }
+      }
+    }
+    final camMatch = RegExp(r'^[A-Za-z](\d+)$').firstMatch(effectiveReel);
+    if (camMatch != null) {
+      effectiveReel = camMatch.group(1)!;
+    }
+
     final duplicated = lastRecord.copyWith(
       id: const Uuid().v4(), // Force new ID
       take: nextTake,
+      reel: effectiveReel,
       cameras: [], // Empty cameras for new take
       tcIn: tcIn,
       tcOut: '',
@@ -670,6 +708,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _activeAutofocusNode == focusNode) {
         focusNode.requestFocus();
+        _autofocusFieldId = null;
       }
     });
   }
@@ -1420,10 +1459,15 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       return camRecord?.clipName ?? '';
     }
 
-    void updateRecord(ShotRecord newRecord) {
+    void updateRecord(ShotRecord newRecord, {String? defaultReel}) {
       final newRecords = List<ShotRecord>.from(widget.project.log.records);
       newRecords[index] = newRecord;
-      _updateRecords(newRecords);
+      final updatedLog = widget.project.log.copyWith(records: newRecords);
+      if (defaultReel != null && defaultReel.isNotEmpty && defaultReel != widget.project.defaultReel.trim()) {
+        widget.onProjectChanged(widget.project.copyWith(log: updatedLog, defaultReel: defaultReel));
+      } else {
+        widget.onProjectChanged(widget.project.copyWith(log: updatedLog));
+      }
     }
 
     void updateSetupField({String? chapter, String? scene, String? plane}) {
@@ -1637,9 +1681,20 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 width: 75, 
                 child: _buildGridCell(
                   record.reel, 
-                  (v) => updateRecord(record.copyWith(reel: v)), 
+                  (v) {
+                    var clean = v.trim();
+                    final match = RegExp(r'^[A-Za-z](\d+)$').firstMatch(clean);
+                    if (match != null) {
+                      clean = match.group(1)!;
+                    }
+                    updateRecord(
+                      record.copyWith(reel: clean),
+                      defaultReel: clean.isNotEmpty ? clean : null,
+                    );
+                  }, 
                   hintText: 'Reel',
                   labelText: 'Reel',
+                  key: ValueKey('${record.id}_reel'),
                 ),
               ),
               const SizedBox(width: 8),

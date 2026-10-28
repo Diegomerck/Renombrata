@@ -165,6 +165,36 @@ void main() {
       expect(log.metadata.ingestor, 'MARIANA SOSA');
       expect(log.records.first.reel, '042');
     });
+
+    test('strips camera letter prefix from reel in Excel row', () {
+      var excel = Excel.createExcel();
+      var sheetName = excel.tables.keys.first;
+      var sheet = excel[sheetName];
+
+      List<String> headers = ['CAP', 'ESCENA', 'TOMA', 'CAM A', 'REEL'];
+      for (int i = 0; i < headers.length; i++) {
+        sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 0), TextCellValue(headers[i]));
+      }
+
+      // Row 1 with A001
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 1), TextCellValue('1'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: 1), TextCellValue('10'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 2, rowIndex: 1), TextCellValue('1'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: 1), TextCellValue('1'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: 1), TextCellValue('A001'));
+
+      // Row 2 with B002
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 2), TextCellValue('1'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: 2), TextCellValue('10'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 2, rowIndex: 2), TextCellValue('2'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: 2), TextCellValue('2'));
+      sheet.updateCell(CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: 2), TextCellValue('B002'));
+
+      final log = BitacoraParserService.parseExcel(excel);
+      expect(log.records.length, 2);
+      expect(log.records[0].reel, '001');
+      expect(log.records[1].reel, '002');
+    });
   });
 }
 
