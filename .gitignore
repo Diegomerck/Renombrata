@@ -46,3 +46,8 @@ app.*.map.json
 
 # Heavy local media tests
 Test Files/Micronovela Media Test/
+
+Test Files/BITACORAS/
+Test Files/D01_Test_Card/
+Test Files/Metadata Test Files/
+Test Files/Screenshots for Metadata checking/

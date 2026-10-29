@@ -16,7 +16,6 @@ import 'package:renombrata/src/services/report_export_service.dart';
 import 'package:renombrata/src/services/project_service.dart';
 import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/models/app_settings.dart';
-import 'package:renombrata/src/services/convention_name_generator.dart';
 import 'package:renombrata/src/services/settings_service.dart';
 import 'package:renombrata/src/ui/settings_dialog.dart';
 import 'package:renombrata/src/ui/bitacora_editor_tab.dart';
@@ -30,6 +29,11 @@ import 'package:flutter/gestures.dart';
 import 'package:renombrata/src/utils/timecode_formatter.dart';
 import 'package:renombrata/src/services/pages_converter_service.dart';
 import 'package:renombrata/src/ui/quick_paste_convention_dialog.dart';
+import 'package:renombrata/src/services/convention_generator_service.dart';
+import 'package:renombrata/src/services/convention_name_generator.dart';
+import 'package:renombrata/src/ui/widgets/line_numbered_text_field.dart';
+import 'package:renombrata/src/ui/dialogs/take_linker_dialog.dart';
+import 'package:renombrata/src/ui/dialogs/sony_m01_confirmation_dialog.dart';
 import '../../main.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -46,11 +50,19 @@ class HomeScreen extends StatefulWidget {
     this.customStudioVideoController,
   });
 
-  static String computeLiveSmpte(Duration position, String? baseTcIn, String frameRate) {
+  static String computeLiveSmpte(
+    Duration position,
+    String? baseTcIn,
+    String frameRate,
+  ) {
     final fps = TimecodeUtils.getFpsInt(frameRate);
     int baseFrames = 0;
     if (baseTcIn != null && baseTcIn.trim().isNotEmpty) {
-      final parts = baseTcIn.trim().split(':').map((p) => int.tryParse(p) ?? 0).toList();
+      final parts = baseTcIn
+          .trim()
+          .split(':')
+          .map((p) => int.tryParse(p) ?? 0)
+          .toList();
       if (parts.length >= 4) {
         final h = parts[0];
         final m = parts[1];
@@ -91,7 +103,8 @@ class _ConventionLineStatus {
   });
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   RenombrataProject _project = RenombrataProject(
     log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
@@ -106,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   String? _projectPath;
   bool _isDirty = false;
-  
+
   String? _mediaFolderPath;
   bool _renameMetadata = true;
 
@@ -128,16 +141,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   RenameProposal? _selectedStudioClip;
   Player? _studioPlayer;
   VideoController? _studioVideoController;
-  final ValueNotifier<bool> _studioIsPlayingNotifier = ValueNotifier<bool>(false);
-  final ValueNotifier<Duration> _studioPositionNotifier = ValueNotifier<Duration>(Duration.zero);
-  final ValueNotifier<Duration> _studioDurationNotifier = ValueNotifier<Duration>(Duration.zero);
-  final ValueNotifier<double> _studioVolumeNotifier = ValueNotifier<double>(100.0);
+  final ValueNotifier<bool> _studioIsPlayingNotifier = ValueNotifier<bool>(
+    false,
+  );
+  final ValueNotifier<Duration> _studioPositionNotifier =
+      ValueNotifier<Duration>(Duration.zero);
+  final ValueNotifier<Duration> _studioDurationNotifier =
+      ValueNotifier<Duration>(Duration.zero);
+  final ValueNotifier<double> _studioVolumeNotifier = ValueNotifier<double>(
+    100.0,
+  );
   final ValueNotifier<bool> _studioIsMutedNotifier = ValueNotifier<bool>(false);
   double _studioPreMuteVolume = 100.0;
   bool _studioIsDraggingSlider = false;
   double _studioDragSliderValue = 0.0;
 
-  final TransformationController _studioZoomController = TransformationController();
+  final TransformationController _studioZoomController =
+      TransformationController();
   double _studioCurrentZoom = 1.0;
   Offset? _studioHoveredPointerPosition;
 
@@ -171,28 +191,48 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @visibleForTesting
   void selectStudioClip(RenameProposal p) => _selectStudioClip(p);
 
-  final TextEditingController _studioChapterController = TextEditingController();
+  final TextEditingController _studioChapterController =
+      TextEditingController();
   final TextEditingController _studioSceneController = TextEditingController();
   final TextEditingController _studioPlaneController = TextEditingController();
   final TextEditingController _studioTakeController = TextEditingController();
+  final TextEditingController _studioReelController = TextEditingController();
   final TextEditingController _studioNotesController = TextEditingController();
+  String? _lastSelectedReel;
   bool _studioIsMos = false;
   bool _studioIsTf = false;
   bool _studioIsDs = false;
   bool _studioIsFf = false;
   bool _studioIsGpr = false;
   bool _studioIsDr = false;
+  Timer? _studioSaveDebounceTimer;
+  bool _isStudioSaving = false;
+  bool _isStudioPendingSave = false;
+  Duration _lastStudioPlaybackPosition = Duration.zero;
 
-  final FocusNode _conventionEditorFocusNode = FocusNode(debugLabel: 'conventionEditor');
-  final FocusNode _studioChapterFocusNode = FocusNode(debugLabel: 'studioChapter');
+  final FocusNode _conventionEditorFocusNode = FocusNode(
+    debugLabel: 'conventionEditor',
+  );
+  final FocusNode _studioChapterFocusNode = FocusNode(
+    debugLabel: 'studioChapter',
+  );
   final FocusNode _studioSceneFocusNode = FocusNode(debugLabel: 'studioScene');
   final FocusNode _studioTakeFocusNode = FocusNode(debugLabel: 'studioTake');
   final FocusNode _studioPlaneFocusNode = FocusNode(debugLabel: 'studioPlane');
+  final FocusNode _studioReelFocusNode = FocusNode(debugLabel: 'studioReel');
   final FocusNode _studioNotesFocusNode = FocusNode(debugLabel: 'studioNotes');
-  final FocusNode _studioWorkspaceFocusNode = FocusNode(debugLabel: 'studioWorkspace');
-  final FocusNode _studioMediaListFocusNode = FocusNode(debugLabel: 'studioMediaList');
-  final FocusNode _studioInspectorFocusNode = FocusNode(debugLabel: 'studioInspector');
-  final FocusNode _conventionEditorPanelFocusNode = FocusNode(debugLabel: 'conventionEditorPanel');
+  final FocusNode _studioWorkspaceFocusNode = FocusNode(
+    debugLabel: 'studioWorkspace',
+  );
+  final FocusNode _studioMediaListFocusNode = FocusNode(
+    debugLabel: 'studioMediaList',
+  );
+  final FocusNode _studioInspectorFocusNode = FocusNode(
+    debugLabel: 'studioInspector',
+  );
+  final FocusNode _conventionEditorPanelFocusNode = FocusNode(
+    debugLabel: 'conventionEditorPanel',
+  );
 
   @visibleForTesting
   FocusNode get studioWorkspaceFocusNode => _studioWorkspaceFocusNode;
@@ -204,7 +244,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   FocusNode get studioInspectorFocusNode => _studioInspectorFocusNode;
 
   @visibleForTesting
-  FocusNode get conventionEditorPanelFocusNode => _conventionEditorPanelFocusNode;
+  FocusNode get conventionEditorPanelFocusNode =>
+      _conventionEditorPanelFocusNode;
 
   @visibleForTesting
   FocusNode get conventionEditorFocusNode => _conventionEditorFocusNode;
@@ -220,6 +261,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   @visibleForTesting
   FocusNode get studioPlaneFocusNode => _studioPlaneFocusNode;
+
+  @visibleForTesting
+  FocusNode get studioReelFocusNode => _studioReelFocusNode;
 
   @visibleForTesting
   FocusNode get studioNotesFocusNode => _studioNotesFocusNode;
@@ -240,7 +284,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void selectNextStudioClip() => _selectNextStudioClip();
 
   @visibleForTesting
-  ({double mediaWidth, double conventionWidth}) calculateStudioPaneWidths(double totalWidth) {
+  ({double mediaWidth, double conventionWidth}) calculateStudioPaneWidths(
+    double totalWidth,
+  ) {
     if (totalWidth <= 1250) {
       final t = ((totalWidth - 1100.0) / 150.0).clamp(0.0, 1.0);
       final media = 280.0 + (330.0 - 280.0) * t;
@@ -261,10 +307,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   RenameProposal? get selectedStudioClip => _selectedStudioClip;
 
   @visibleForTesting
+  List<RenameProposal> get studioMediaClips => _studioMediaClips;
+
+  @visibleForTesting
   DryRunReport? get previousReportBeforePaste => _previousReportBeforePaste;
 
   @visibleForTesting
-  set previousReportBeforePaste(DryRunReport? value) => _previousReportBeforePaste = value;
+  set previousReportBeforePaste(DryRunReport? value) =>
+      _previousReportBeforePaste = value;
 
   @visibleForTesting
   DryRunReport? get report => _report;
@@ -300,25 +350,38 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   TextEditingController get studioTakeController => _studioTakeController;
 
   @visibleForTesting
+  TextEditingController get studioReelController => _studioReelController;
+
+  @visibleForTesting
   TextEditingController get studioNotesController => _studioNotesController;
 
   @visibleForTesting
-  TextEditingController get conventionEditorController => _conventionEditorController;
+  TextEditingController get conventionEditorController =>
+      _conventionEditorController;
 
   @visibleForTesting
-  UndoHistoryController get conventionEditorUndoController => _conventionEditorUndoController;
+  UndoHistoryController get conventionEditorUndoController =>
+      _conventionEditorUndoController;
 
   @visibleForTesting
   void onConventionTextChanged(String text) => _onConventionTextChanged(text);
 
-  final TextEditingController _reelController = TextEditingController(text: '001');
+  @visibleForTesting
+  Map<String, String> get livePastedOverrides => _livePastedOverrides;
+
+  final TextEditingController _reelController = TextEditingController(
+    text: '001',
+  );
   final ScrollController _horizontalTableScrollController = ScrollController();
   final ScrollController _verticalTableScrollController = ScrollController();
   final ScrollController _studioMediaListScrollController = ScrollController();
-  final ScrollController _conventionLineStatusScrollController = ScrollController();
+  final ScrollController _conventionLineStatusScrollController =
+      ScrollController();
   bool _showConventionEditorPane = false;
-  final TextEditingController _conventionEditorController = TextEditingController();
-  final UndoHistoryController _conventionEditorUndoController = UndoHistoryController();
+  final TextEditingController _conventionEditorController =
+      TextEditingController();
+  final UndoHistoryController _conventionEditorUndoController =
+      UndoHistoryController();
   Map<String, String> _livePastedOverrides = {};
   Map<String, int> _livePastedLineNumbers = {};
   Map<String, String> _duplicateClipConflicts = {};
@@ -342,6 +405,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _tabController.addListener(() {
       if (_tabController.index == 0) {
         _disposeStudioPlayer();
+      } else if (_tabController.index == 1) {
+        _restoreStudioPlayerIfNeeded();
       }
     });
     _studioMediaListFocusNode.addListener(_onStudioFocusChanged);
@@ -447,7 +512,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final focal = focalPoint ?? defaultFocal;
 
     final currentTranslation = _studioZoomController.value.getTranslation();
-    final currentTranslationOffset = Offset(currentTranslation.x, currentTranslation.y);
+    final currentTranslationOffset = Offset(
+      currentTranslation.x,
+      currentTranslation.y,
+    );
 
     final contentPoint = (focal - currentTranslationOffset) / currentScale;
     final newTranslationOffset = focal - (contentPoint * clampedScale);
@@ -464,16 +532,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   void _studioZoomIn({Offset? focalPoint}) {
     final currentScale = _studioZoomController.value.getMaxScaleOnAxis();
-    _studioZoomTo(currentScale * 1.3, focalPoint: focalPoint ?? _studioHoveredPointerPosition);
+    _studioZoomTo(
+      currentScale * 1.3,
+      focalPoint: focalPoint ?? _studioHoveredPointerPosition,
+    );
   }
 
   void _studioZoomOut({Offset? focalPoint}) {
     final currentScale = _studioZoomController.value.getMaxScaleOnAxis();
-    _studioZoomTo(currentScale / 1.3, focalPoint: focalPoint ?? _studioHoveredPointerPosition);
+    _studioZoomTo(
+      currentScale / 1.3,
+      focalPoint: focalPoint ?? _studioHoveredPointerPosition,
+    );
   }
 
-  String _computeLiveSmpte(Duration position, String? baseTcIn, String frameRate) =>
-      HomeScreen.computeLiveSmpte(position, baseTcIn, frameRate);
+  String _computeLiveSmpte(
+    Duration position,
+    String? baseTcIn,
+    String frameRate,
+  ) => HomeScreen.computeLiveSmpte(position, baseTcIn, frameRate);
 
   void _openSettingsDialog() {
     showDialog(
@@ -506,6 +583,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
     _studioSubscriptions.clear();
     try {
+      if (_studioPositionNotifier.value > Duration.zero) {
+        _lastStudioPlaybackPosition = _studioPositionNotifier.value;
+      }
       _studioPlayer?.pause();
       _studioVideoController = null;
       _studioPlayer?.dispose();
@@ -515,8 +595,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
+  void _restoreStudioPlayerIfNeeded() {
+    if (_selectedStudioClip == null) return;
+    final path = _selectedStudioClip!.originalFilePath;
+    if (path == null || !_isPlayableVideo(path)) return;
+
+    if (!File(path).existsSync() && !path.startsWith('/media/')) return;
+
+    if (_studioPlayer == null) {
+      _initStudioPlayer();
+    }
+    try {
+      _studioPlayer?.open(Media(path)).then((_) {
+        if (_lastStudioPlaybackPosition > Duration.zero) {
+          _studioPlayer?.seek(_lastStudioPlaybackPosition);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error restoring studio player: $e');
+    }
+  }
+
   @override
   void dispose() {
+    _studioSaveDebounceTimer?.cancel();
     _disposeStudioPlayer();
     _tabController.dispose();
 
@@ -537,6 +639,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _studioSceneFocusNode.dispose();
     _studioPlaneFocusNode.dispose();
     _studioTakeFocusNode.dispose();
+    _studioReelFocusNode.dispose();
     _studioNotesFocusNode.dispose();
     _conventionEditorController.dispose();
     _conventionEditorUndoController.dispose();
@@ -551,14 +654,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _studioSceneController.dispose();
     _studioPlaneController.dispose();
     _studioTakeController.dispose();
+    _studioReelController.dispose();
     _studioNotesController.dispose();
     _notificationTimer?.cancel();
     super.dispose();
   }
 
   String _computeDefaultReel(String camera) {
-    if (_project.log.records.isEmpty) return '${camera}001';
-    
+    final effectiveCam = camera.toUpperCase() == 'ALL'
+        ? (_project.cameraNames.isNotEmpty ? _project.cameraNames.first : 'A')
+        : camera;
+    if (_project.log.records.isEmpty) return '${effectiveCam}001';
+
     String baseReel = '';
     for (var r in _project.log.records) {
       if (r.reel.trim().isNotEmpty) {
@@ -566,19 +673,80 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         break;
       }
     }
-    
-    if (baseReel.isEmpty) return '${camera}001';
+
+    if (baseReel.isEmpty) return '${effectiveCam}001';
 
     final letterMatch = RegExp(r'^([A-Za-z])(\d+.*)$').firstMatch(baseReel);
     if (letterMatch != null) {
-      return '$camera${letterMatch.group(2)}';
+      return '$effectiveCam${letterMatch.group(2)}';
     } else {
       final numericMatch = RegExp(r'^(\d+.*)$').firstMatch(baseReel);
       if (numericMatch != null) {
-        return '$camera$baseReel';
+        return '$effectiveCam$baseReel';
       }
     }
     return baseReel;
+  }
+
+  void _regenerateConventionLines() {
+    final clips = _studioMediaClips;
+    if (clips.isEmpty) return;
+
+    final newLines = <String>[];
+    for (int i = 0; i < clips.length; i++) {
+      final clip = clips[i];
+      final clipIndex = i + 1;
+      final rec = clip.associatedRecord;
+
+      final isCurrentSelected =
+          _selectedStudioClip?.originalFilePath == clip.originalFilePath;
+
+      final chapter =
+          isCurrentSelected && _studioChapterController.text.trim().isNotEmpty
+          ? _studioChapterController.text.trim()
+          : (rec?.chapter ?? '');
+      final scene =
+          isCurrentSelected && _studioSceneController.text.trim().isNotEmpty
+          ? _studioSceneController.text.trim()
+          : (rec?.scene ?? '');
+      final plane =
+          isCurrentSelected && _studioPlaneController.text.trim().isNotEmpty
+          ? _studioPlaneController.text.trim()
+          : rec?.plane;
+      final take =
+          isCurrentSelected && _studioTakeController.text.trim().isNotEmpty
+          ? _studioTakeController.text.trim()
+          : (rec?.take.isNotEmpty == true ? rec!.take : '1');
+      final reel =
+          isCurrentSelected && _studioReelController.text.trim().isNotEmpty
+          ? _studioReelController.text.trim()
+          : (rec?.reel.isNotEmpty == true
+                ? rec!.reel
+                : (_getProposalReel(clip).isNotEmpty
+                      ? _getProposalReel(clip)
+                      : _project.defaultReel));
+      final camera = _project.activeCamera;
+
+      final conventionName = ConventionGeneratorService.generateConventionName(
+        project: _project,
+        chapter: chapter,
+        scene: scene,
+        plane: plane,
+        take: take,
+        reel: reel,
+        camera: camera,
+        clipIndex: clipIndex,
+      );
+
+      newLines.add(conventionName);
+      if (clip.originalFilePath != null) {
+        _livePastedOverrides[clip.originalFilePath!] = conventionName;
+        _livePastedLineNumbers[clip.originalFilePath!] = clipIndex;
+      }
+    }
+
+    _conventionEditorController.text = newLines.join('\n');
+    _evaluateConventionMatches();
   }
 
   void _updateProject(RenombrataProject newProject) {
@@ -589,6 +757,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _reelController.text = newProject.defaultReel;
       }
     });
+    _regenerateConventionLines();
     // Auto-generate preview if tab is on renamer
     _generatePreview();
   }
@@ -673,7 +842,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       await _saveProjectAs();
       return;
     }
-    
+
     // Save current active camera and reel to project before saving
     _project = _project.copyWith(
       activeCamera: _project.activeCamera,
@@ -701,7 +870,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
 
     if (outputDir != null) {
-      String outputFile = '$outputDir${Platform.pathSeparator}proyecto.renombrata';
+      String outputFile =
+          '$outputDir${Platform.pathSeparator}proyecto.renombrata';
       setState(() {
         _projectPath = outputFile;
       });
@@ -716,7 +886,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Hay cambios sin guardar'),
-        content: const Text('¿Desea continuar y perder los cambios no guardados?'),
+        content: const Text(
+          '¿Desea continuar y perder los cambios no guardados?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -774,7 +946,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _report = null;
         });
         if (mounted) {
-          _showNotification('Error al leer la bitácora: Verifique que sea un archivo Excel válido', isError: true);
+          _showNotification(
+            'Error al leer la bitácora: Verifique que sea un archivo Excel válido',
+            isError: true,
+          );
         }
       } finally {
         setState(() {
@@ -797,18 +972,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         });
         await _generatePreview();
         if (mounted) {
-          final folderName = selectedDirectory.split(Platform.pathSeparator).last;
+          final folderName = selectedDirectory
+              .split(Platform.pathSeparator)
+              .last;
           final totalScanned = _report?.proposals.length ?? 0;
           if (_project.log.records.isEmpty) {
-            _showNotification('Carpeta "$folderName" seleccionada ($totalScanned clips detectados). Importa un Excel o crea tomas en la Bitácora Digital para generar propuestas.');
+            _showNotification(
+              'Carpeta "$folderName" seleccionada ($totalScanned clips detectados). Importa un Excel o crea tomas en la Bitácora Digital para generar propuestas.',
+            );
           } else {
-            _showNotification('Carpeta "$folderName" cargada correctamente ($totalScanned clips analizados).');
+            _showNotification(
+              'Carpeta "$folderName" cargada correctamente ($totalScanned clips analizados).',
+            );
           }
         }
       }
     } catch (e) {
       if (mounted) {
-        _showNotification('Error al abrir selector de carpeta: $e', isError: true);
+        _showNotification(
+          'Error al abrir selector de carpeta: $e',
+          isError: true,
+        );
       }
     }
   }
@@ -839,13 +1023,47 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         searchSubdirectories: true,
       );
 
+      // Check Sony M01 metadata files if undecided
+      if (_project.hasConfirmedM01Sidecars == null &&
+          MediaScannerService.hasSonyM01Files(scannedFiles) &&
+          mounted) {
+        ScannedFile? sampleVideo;
+        ScannedFile? sampleXml;
+        for (final v in scannedFiles.where((f) => f.isVideo)) {
+          final comp = ClipMatcherService.findCompanionXml(
+            v,
+            scannedFiles.where((f) => f.isXml).toList(),
+            pairM01Sidecars: true,
+          );
+          if (comp != null && ClipMatcherService.isM01Companion(v, comp)) {
+            sampleVideo = v;
+            sampleXml = comp;
+            break;
+          }
+        }
+        final confirmed = await SonyM01ConfirmationDialog.show(
+          context,
+          sampleVideoName: sampleVideo?.basename,
+          sampleXmlName: sampleXml?.basename,
+        );
+        if (confirmed != null && mounted) {
+          _project = _project.copyWith(hasConfirmedM01Sidecars: confirmed);
+          _isDirty = true;
+        }
+      }
+
+      final pairM01 = _project.hasConfirmedM01Sidecars ?? false;
+
       final baseReport = await ClipMatcherService.matchFilesAsync(
         scannedFiles: scannedFiles,
         log: _project.log,
         targetCamera: _project.activeCamera,
-        reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
+        reelOverride: _reelController.text.trim().isNotEmpty
+            ? _reelController.text.trim()
+            : null,
         renameHistory: history,
         manualOverrides: const {},
+        pairM01Sidecars: pairM01,
       );
 
       final report = _manualOverrides.isEmpty
@@ -854,9 +1072,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               scannedFiles: scannedFiles,
               log: _project.log,
               targetCamera: _project.activeCamera,
-              reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
+              reelOverride: _reelController.text.trim().isNotEmpty
+                  ? _reelController.text.trim()
+                  : null,
               renameHistory: history,
               manualOverrides: _manualOverrides,
+              pairM01Sidecars: pairM01,
             );
 
       setState(() {
@@ -889,17 +1110,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     int faltantes = _report!.totalMissing;
     int noRegistrados = _report!.totalUnmatched;
-    
+
     String extraWarning = '';
     if (faltantes > 0 || noRegistrados > 0) {
-      extraWarning = '\n\nAviso: Existen archivos faltantes o no registrados en esta carpeta. Solo se renombrarán los $readyCount archivos listos coincidentes.';
+      extraWarning =
+          '\n\nAviso: Existen archivos faltantes o no registrados en esta carpeta. Solo se renombrarán los $readyCount archivos listos coincidentes.';
     }
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('¿Confirmar renombrado de archivos?'),
-        content: Text('Se renombrarán $readyCount archivos en el disco. Esta acción modificará los nombres originales.$extraWarning'),
+        content: Text(
+          'Se renombrarán $readyCount archivos en el disco. Esta acción modificará los nombres originales.$extraWarning',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -975,19 +1199,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _resolvedConflictPaths.add(filePath);
           _duplicateClipConflicts.remove(filePath);
 
-          final idx = updatedProposals.indexWhere((p) => p.originalFilePath == filePath);
+          final idx = updatedProposals.indexWhere(
+            (p) => p.originalFilePath == filePath,
+          );
           if (idx == -1) continue;
 
           final prop = updatedProposals[idx];
           final origExt = p.extension(filePath);
           final fn = p.basename(filePath);
           final reel = _getProposalReel(prop).toUpperCase();
-          final clipNum = int.tryParse(ClipMatcherService.extractClipNumber(fn)) ?? 0;
+          final clipNum =
+              int.tryParse(ClipMatcherService.extractClipNumber(fn)) ?? 0;
           final conventionLine = _findConventionNameForClip(reel, clipNum);
 
           if (assignment == null) {
-            updatedProposals[idx] = prop.copyWith(status: ProposalStatus.unmatchedClip);
-          } else if (assignment == '__PRIMARY__' || (_project.log.records.any((r) => r.id == assignment))) {
+            updatedProposals[idx] = prop.copyWith(
+              status: ProposalStatus.unmatchedClip,
+            );
+          } else if (assignment == '__PRIMARY__' ||
+              (_project.log.records.any((r) => r.id == assignment))) {
             String targetName = conventionLine ?? prop.proposedFileName;
             if (p.extension(targetName).isEmpty && origExt.isNotEmpty) {
               targetName = '$targetName$origExt';
@@ -997,10 +1227,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               status: ProposalStatus.ready,
             );
             _updateCompanionProposals(updatedProposals, filePath, targetName);
-          } else if (assignment == '__ALT__' || assignment.startsWith('__ALT__:')) {
-            String baseName = conventionLine != null && conventionLine.isNotEmpty
+          } else if (assignment == '__ALT__' ||
+              assignment.startsWith('__ALT__:')) {
+            String baseName =
+                conventionLine != null && conventionLine.isNotEmpty
                 ? p.basenameWithoutExtension(conventionLine)
-                : p.basenameWithoutExtension(prop.proposedFileName.isNotEmpty ? prop.proposedFileName : filePath);
+                : p.basenameWithoutExtension(
+                    prop.proposedFileName.isNotEmpty
+                        ? prop.proposedFileName
+                        : filePath,
+                  );
             if (baseName.endsWith('_ALT')) {
               baseName = baseName.substring(0, baseName.length - 4);
             }
@@ -1026,7 +1262,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     if (p.fileReel != null && p.fileReel!.trim().isNotEmpty) {
       return p.fileReel!.trim();
     }
-    if (p.associatedRecord?.reel != null && p.associatedRecord!.reel.trim().isNotEmpty) {
+    if (p.associatedRecord?.reel != null &&
+        p.associatedRecord!.reel.trim().isNotEmpty) {
       return p.associatedRecord!.reel.trim();
     }
     if (p.originalFilePath != null) {
@@ -1039,14 +1276,122 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   void _onConventionTextChanged(String text) {
+    _syncConventionEditorToBitacora(text);
     _evaluateConventionMatches();
+  }
+
+  void _syncConventionEditorToBitacora(String text) {
+    if (text.trim().isEmpty) return;
+    final lines = text.split(RegExp(r'\r?\n'));
+    final mediaClips = _studioMediaClips;
+    final records = List<ShotRecord>.from(_project.log.records);
+    bool logChanged = false;
+
+    for (int i = 0; i < lines.length; i++) {
+      final trimmed = lines[i].trim();
+      if (trimmed.isEmpty) continue;
+
+      final parsed = ConventionGeneratorService.parseConventionLine(
+        line: trimmed,
+        project: _project,
+      );
+      if (parsed == null) continue;
+
+      final chapter = parsed['chapter'] ?? '';
+      final scene = parsed['scene'] ?? '';
+      final plane = parsed['plane'];
+      final take = parsed['take'] ?? '1';
+      final reel = parsed['reel'] ?? _project.defaultReel;
+      final clipIndex = int.tryParse(parsed['clipIndex'] ?? '') ?? (i + 1);
+
+      RenameProposal? matchedClip;
+      if (clipIndex > 0 && clipIndex <= mediaClips.length) {
+        matchedClip = mediaClips[clipIndex - 1];
+      }
+
+      final camera = _project.activeCamera;
+      final clipNum = matchedClip != null
+          ? ClipMatcherService.extractClipNumber(
+              matchedClip.originalFilePath ?? '',
+            )
+          : clipIndex.toString();
+
+      int existingIdx = -1;
+      if (matchedClip?.associatedRecord != null) {
+        existingIdx = records.indexWhere(
+          (r) => r.id == matchedClip!.associatedRecord!.id,
+        );
+      }
+      if (existingIdx == -1) {
+        existingIdx = records.indexWhere(
+          (r) => r.cameras.any(
+            (c) => c.clipName == clipNum && c.cameraName == camera,
+          ),
+        );
+      }
+      if (existingIdx == -1) {
+        existingIdx = records.indexWhere(
+          (r) =>
+              r.scene == scene &&
+              (plane == null || r.plane == plane) &&
+              r.take == take,
+        );
+      }
+
+      if (existingIdx != -1) {
+        final existing = records[existingIdx];
+        records[existingIdx] = existing.copyWith(
+          chapter: chapter.isNotEmpty ? chapter : existing.chapter,
+          scene: scene.isNotEmpty ? scene : existing.scene,
+          plane: plane ?? existing.plane,
+          take: take.isNotEmpty ? take : existing.take,
+          reel: reel.isNotEmpty ? reel : existing.reel,
+        );
+        logChanged = true;
+      } else {
+        final newRecord = ShotRecord(
+          chapter: chapter,
+          scene: scene,
+          plane: plane,
+          take: take,
+          cameras: [CameraTakeRecord(cameraName: camera, clipName: clipNum)],
+          reel: reel,
+          tcIn: matchedClip?.fileTcIn,
+          tcOut: matchedClip?.fileTcOut,
+        );
+        records.add(newRecord);
+        logChanged = true;
+      }
+
+      // If active clip matches this line, refresh Slate quick entry text controllers
+      if (_selectedStudioClip != null &&
+          matchedClip != null &&
+          _selectedStudioClip!.originalFilePath ==
+              matchedClip.originalFilePath) {
+        _studioChapterController.text = chapter;
+        _studioSceneController.text = scene;
+        _studioPlaneController.text = plane ?? '';
+        _studioTakeController.text = take;
+        _studioReelController.text = reel;
+        _lastSelectedReel = reel;
+      }
+    }
+
+    if (logChanged) {
+      setState(() {
+        _project = _project.copyWith(
+          log: _project.log.copyWith(records: records),
+        );
+        _isDirty = true;
+      });
+    }
   }
 
   Future<void> _pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data != null && data.text != null && data.text!.isNotEmpty) {
       _conventionEditorController.text = data.text!;
-      _evaluateConventionMatches();
+      _onConventionTextChanged(data.text!);
     }
   }
 
@@ -1083,8 +1428,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final parsedLines = <PastedLineItem>[];
     for (int i = 0; i < rawLines.length; i++) {
       final trimmed = rawLines[i].trim();
-      if (trimmed.isNotEmpty) {
-        parsedLines.add(QuickPasteConventionDialog.parsePastedLine(trimmed, i + 1));
+      if (trimmed.isEmpty) continue;
+      final lineIndex = i + 1;
+
+      var item = QuickPasteConventionDialog.parsePastedLine(trimmed, lineIndex);
+      final conventionParsed = ConventionGeneratorService.parseConventionLine(
+        line: trimmed,
+        project: _project,
+      );
+
+      if (conventionParsed != null) {
+        final parsedClip = int.tryParse(conventionParsed['clipIndex'] ?? '');
+        final parsedReel = conventionParsed['reel'];
+        item = PastedLineItem(
+          lineNumber: lineIndex,
+          rawLine: trimmed,
+          clipNumber: parsedClip ?? item.clipNumber,
+          reel: parsedReel ?? item.reel,
+          hasExtractedClip: (parsedClip != null) || item.hasExtractedClip,
+        );
+      }
+
+      if (item.hasExtractedClip) {
+        parsedLines.add(item);
       }
     }
 
@@ -1095,6 +1461,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final reelKey = line.reel?.toUpperCase() ?? 'ALL';
         final key = '${reelKey}_${line.clipNumber}';
         pastedByKey.putIfAbsent(key, () => []).add(line);
+        final reelKeyNum = reelKey.replaceAll(RegExp(r'^[A-Z]'), '');
+        if (reelKeyNum.isNotEmpty && reelKeyNum != reelKey) {
+          pastedByKey
+              .putIfAbsent('${reelKeyNum}_${line.clipNumber}', () => [])
+              .add(line);
+        }
       }
     }
     final duplicatePastedKeys = <String>{};
@@ -1121,9 +1493,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     for (final entry in diskClipsByKey.entries) {
       if (entry.value.length > 1) {
         final firstClip = entry.value.first;
-        final clipNum = int.tryParse(ClipMatcherService.extractClipNumber(
-          p.basename(firstClip.originalFilePath!),
-        )) ?? 0;
+        final clipNum =
+            int.tryParse(
+              ClipMatcherService.extractClipNumber(
+                p.basename(firstClip.originalFilePath!),
+              ),
+            ) ??
+            0;
         final clipNumDisplay = clipNum.toString().padLeft(2, '0');
         for (final clip in entry.value) {
           final path = clip.originalFilePath!;
@@ -1138,7 +1514,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     if (newDuplicateClipConflicts.isNotEmpty) {
       bool reportChanged = false;
       final updatedProposals = _report!.proposals.map((prop) {
-        if (prop.originalFilePath != null && newDuplicateClipConflicts.containsKey(prop.originalFilePath)) {
+        if (prop.originalFilePath != null &&
+            newDuplicateClipConflicts.containsKey(prop.originalFilePath)) {
           if (prop.status != ProposalStatus.conflict) {
             reportChanged = true;
             return prop.copyWith(status: ProposalStatus.conflict);
@@ -1153,54 +1530,51 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     final newLiveOverrides = <String, String>{};
     final newLiveLineNumbers = <String, int>{};
-    final hasAnyExtractedClip = parsedLines.any((l) => l.hasExtractedClip);
 
-    if (!hasAnyExtractedClip) {
-      // Sequential fallback
-      for (int i = 0; i < mediaClips.length; i++) {
-        final clip = mediaClips[i];
-        final path = clip.originalFilePath!;
-        if (newDuplicateClipConflicts.containsKey(path)) continue;
-        if (_resolvedConflictPaths.contains(path)) continue;
+    // Intelligent matching by (Reel, ClipNumber) - without arbitrary sequential fallback
+    for (final clip in mediaClips) {
+      final path = clip.originalFilePath!;
+      if (newDuplicateClipConflicts.containsKey(path)) continue;
+      if (_resolvedConflictPaths.contains(path)) continue;
 
-        if (i < parsedLines.length) {
-          newLiveOverrides[path] = parsedLines[i].rawLine;
-          newLiveLineNumbers[path] = parsedLines[i].lineNumber;
-        }
-      }
-    } else {
-      // Intelligent matching by (Reel, ClipNumber)
-      for (final clip in mediaClips) {
-        final path = clip.originalFilePath!;
-        if (newDuplicateClipConflicts.containsKey(path)) continue;
-        if (_resolvedConflictPaths.contains(path)) continue;
+      final fileName = p.basename(path);
+      final reel = _getProposalReel(clip).toUpperCase();
+      final clipNumStr = ClipMatcherService.extractClipNumber(fileName);
+      final clipNum = int.tryParse(clipNumStr);
+      if (clipNum == null) continue;
 
-        final fileName = p.basename(path);
-        final reel = _getProposalReel(clip).toUpperCase();
-        final clipNumStr = ClipMatcherService.extractClipNumber(fileName);
-        final clipNum = int.tryParse(clipNumStr);
-        if (clipNum == null) continue;
+      final candidates = <PastedLineItem>[];
+      for (final line in parsedLines) {
+        if (!line.hasExtractedClip || line.clipNumber != clipNum) continue;
 
-        final candidates = <PastedLineItem>[];
-        for (final line in parsedLines) {
-          if (!line.hasExtractedClip || line.clipNumber != clipNum) continue;
-
-          if (line.reel != null) {
-            if (line.reel!.toUpperCase() == reel) {
-              candidates.add(line);
-            }
-          } else {
+        if (line.reel != null) {
+          final lReel = line.reel!.toUpperCase();
+          final cReel = reel.toUpperCase();
+          final lReelNumeric = lReel.replaceAll(RegExp(r'^[A-Z]'), '');
+          final cReelNumeric = cReel.replaceAll(RegExp(r'^[A-Z]'), '');
+          final matches =
+              lReel == cReel ||
+              '${_project.activeCamera}$lReel' == cReel ||
+              lReel == '${_project.activeCamera}$cReel' ||
+              (lReelNumeric.isNotEmpty && lReelNumeric == cReelNumeric);
+          if (matches) {
             candidates.add(line);
           }
+        } else {
+          candidates.add(line);
         }
+      }
 
-        if (candidates.length == 1) {
-          final matchedLine = candidates.first;
-          final lineKey = '${matchedLine.reel?.toUpperCase() ?? 'ALL'}_${matchedLine.clipNumber}';
-          if (!duplicatePastedKeys.contains(lineKey)) {
-            newLiveOverrides[path] = matchedLine.rawLine;
-            newLiveLineNumbers[path] = matchedLine.lineNumber;
-          }
+      if (candidates.length == 1) {
+        final matchedLine = candidates.first;
+        final matchedReel = matchedLine.reel?.toUpperCase() ?? 'ALL';
+        final matchedReelNum = matchedReel.replaceAll(RegExp(r'^[A-Z]'), '');
+        final lineKey = '${matchedReel}_${matchedLine.clipNumber}';
+        final altLineKey = '${matchedReelNum}_${matchedLine.clipNumber}';
+        if (!duplicatePastedKeys.contains(lineKey) &&
+            !duplicatePastedKeys.contains(altLineKey)) {
+          newLiveOverrides[path] = matchedLine.rawLine;
+          newLiveLineNumbers[path] = matchedLine.lineNumber;
         }
       }
     }
@@ -1216,20 +1590,33 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     if (!_verticalTableScrollController.hasClients || _report == null) return;
     List<RenameProposal> displayProposals = _report!.proposals;
     if (!_renameMetadata) {
-      displayProposals = displayProposals.where((p) => !p.isCompanionFile).toList();
+      displayProposals = displayProposals
+          .where((p) => !p.isCompanionFile)
+          .toList();
     }
     if (_selectedReelFilter != null) {
-      displayProposals = displayProposals.where((p) => _getProposalReel(p) == _selectedReelFilter).toList();
+      displayProposals = displayProposals
+          .where((p) => _getProposalReel(p) == _selectedReelFilter)
+          .toList();
     }
     if (_filterOnlyConventionMatches) {
       displayProposals = displayProposals
-          .where((p) => p.originalFilePath != null && _livePastedOverrides.containsKey(p.originalFilePath))
+          .where(
+            (p) =>
+                p.originalFilePath != null &&
+                _livePastedOverrides.containsKey(p.originalFilePath),
+          )
           .toList();
     }
-    final index = displayProposals.indexWhere((p) => p.originalFilePath == originalFilePath);
+    final index = displayProposals.indexWhere(
+      (p) => p.originalFilePath == originalFilePath,
+    );
     if (index != -1) {
       const rowHeight = 48.0;
-      final targetOffset = (index * rowHeight).clamp(0.0, _verticalTableScrollController.position.maxScrollExtent);
+      final targetOffset = (index * rowHeight).clamp(
+        0.0,
+        _verticalTableScrollController.position.maxScrollExtent,
+      );
       _verticalTableScrollController.animateTo(
         targetOffset,
         duration: const Duration(milliseconds: 300),
@@ -1255,7 +1642,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       if (trimmed.isEmpty) continue;
 
       final lineIndex = i + 1;
-      final parsed = QuickPasteConventionDialog.parsePastedLine(trimmed, lineIndex);
+      final parsed = QuickPasteConventionDialog.parsePastedLine(
+        trimmed,
+        lineIndex,
+      );
+      final conventionParsed = ConventionGeneratorService.parseConventionLine(
+        line: trimmed,
+        project: _project,
+      );
 
       // 1. Check if it matched a loaded media clip
       String? matchedPath;
@@ -1270,65 +1664,91 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
       if (matchedPath != null) {
         final originalFileName = p.basename(matchedPath);
-        statuses.add(_ConventionLineStatus(
-          lineNumber: lineIndex,
-          text: 'Línea $lineIndex: $originalFileName',
-          icon: Icons.check_circle,
-          color: Colors.green,
-          targetFilePath: matchedPath,
-        ));
+        statuses.add(
+          _ConventionLineStatus(
+            lineNumber: lineIndex,
+            text: 'Línea $lineIndex: $originalFileName',
+            icon: Icons.check_circle,
+            color: Colors.green,
+            targetFilePath: matchedPath,
+          ),
+        );
         continue;
       }
 
       // 2. Check if the line could not be parsed
-      if (!parsed.hasExtractedClip || parsed.clipNumber == null) {
-        statuses.add(_ConventionLineStatus(
-          lineNumber: lineIndex,
-          text: 'Línea $lineIndex: Formato de convención no reconocido',
-          icon: Icons.help_outline,
-          color: Colors.grey,
-        ));
+      final effectiveClipNumber = parsed.hasExtractedClip
+          ? parsed.clipNumber
+          : int.tryParse(conventionParsed?['clipIndex'] ?? '');
+
+      if (effectiveClipNumber == null) {
+        statuses.add(
+          _ConventionLineStatus(
+            lineNumber: lineIndex,
+            text: 'Línea $lineIndex: Formato de convención no reconocido',
+            icon: Icons.help_outline,
+            color: Colors.grey,
+          ),
+        );
         continue;
       }
 
       // 3. Extracted clip number: check disk files
-      final clipNum = parsed.clipNumber!;
+      final clipNum = effectiveClipNumber;
       final clipNumDisplay = clipNum.toString().padLeft(2, '0');
-      final lineReel = parsed.reel?.toUpperCase();
+      final lineReel = (parsed.reel ?? conventionParsed?['reel'])
+          ?.toUpperCase();
 
       final matchingClipsOnDisk = mediaClips.where((c) {
         final fn = p.basename(c.originalFilePath!);
         final cn = int.tryParse(ClipMatcherService.extractClipNumber(fn));
         final r = _getProposalReel(c).toUpperCase();
-        return cn == clipNum && (lineReel == null || r == lineReel);
+        if (cn != clipNum) return false;
+        if (lineReel == null) return true;
+        final lr = lineReel.toUpperCase();
+        final lrNum = lr.replaceAll(RegExp(r'^[A-Z]'), '');
+        final rNum = r.replaceAll(RegExp(r'^[A-Z]'), '');
+        return lr == r ||
+            lrNum == rNum ||
+            '${_project.activeCamera}$lr' == r ||
+            lr == '${_project.activeCamera}$r';
       }).toList();
 
       if (matchingClipsOnDisk.length > 1) {
         // Duplicate clip conflict on disk
-        statuses.add(_ConventionLineStatus(
-          lineNumber: lineIndex,
-          text: 'Línea $lineIndex: Conflicto en disco (Clip #$clipNumDisplay duplicado)',
-          icon: Icons.warning_amber_rounded,
-          color: Colors.red,
-          targetFilePath: matchingClipsOnDisk.first.originalFilePath,
-        ));
+        statuses.add(
+          _ConventionLineStatus(
+            lineNumber: lineIndex,
+            text:
+                'Línea $lineIndex: Conflicto en disco (Clip #$clipNumDisplay duplicado)',
+            icon: Icons.warning_amber_rounded,
+            color: Colors.red,
+            targetFilePath: matchingClipsOnDisk.first.originalFilePath,
+          ),
+        );
       } else if (matchingClipsOnDisk.isEmpty) {
         // No matching file on disk
-        statuses.add(_ConventionLineStatus(
-          lineNumber: lineIndex,
-          text: 'Línea $lineIndex: Sin archivo en disco (Clip #$clipNumDisplay)',
-          icon: Icons.info_outline,
-          color: Colors.amber,
-        ));
+        statuses.add(
+          _ConventionLineStatus(
+            lineNumber: lineIndex,
+            text:
+                'Línea $lineIndex: Sin archivo en disco (Clip #$clipNumDisplay)',
+            icon: Icons.info_outline,
+            color: Colors.amber,
+          ),
+        );
       } else {
         // Single file on disk, but conflict in text or not matched
-        statuses.add(_ConventionLineStatus(
-          lineNumber: lineIndex,
-          text: 'Línea $lineIndex: Conflicto en texto (Clip #$clipNumDisplay duplicado)',
-          icon: Icons.warning_amber_rounded,
-          color: Colors.red,
-          targetFilePath: matchingClipsOnDisk.first.originalFilePath,
-        ));
+        statuses.add(
+          _ConventionLineStatus(
+            lineNumber: lineIndex,
+            text:
+                'Línea $lineIndex: Conflicto en texto (Clip #$clipNumDisplay duplicado)',
+            icon: Icons.warning_amber_rounded,
+            color: Colors.red,
+            targetFilePath: matchingClipsOnDisk.first.originalFilePath,
+          ),
+        );
       }
     }
 
@@ -1343,7 +1763,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         .toList();
 
     for (int i = 0; i < lines.length; i++) {
-      final parsed = QuickPasteConventionDialog.parsePastedLine(lines[i], i + 1);
+      final parsed = QuickPasteConventionDialog.parsePastedLine(
+        lines[i],
+        i + 1,
+      );
       if (parsed.hasExtractedClip && parsed.clipNumber == clipNumber) {
         if (parsed.reel != null) {
           if (parsed.reel!.toUpperCase() == reel.toUpperCase()) {
@@ -1387,7 +1810,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     for (int i = 0; i < updatedProposals.length; i++) {
       final proposal = updatedProposals[i];
-      if (proposal.isCompanionFile || proposal.originalFilePath == null) continue;
+      if (proposal.isCompanionFile || proposal.originalFilePath == null) {
+        continue;
+      }
 
       final filePath = proposal.originalFilePath!;
       if (_duplicateClipConflicts.containsKey(filePath)) continue;
@@ -1439,20 +1864,37 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _openConflictResolver();
   }
 
+  int? get _activeConventionEditorLineNumber {
+    if (_selectedStudioClip == null) return null;
+    final path = _selectedStudioClip!.originalFilePath;
+    if (path != null && _livePastedLineNumbers.containsKey(path)) {
+      return _livePastedLineNumbers[path];
+    }
+    final clips = _studioMediaClips;
+    final idx = clips.indexWhere((c) => c.originalFilePath == path);
+    if (idx != -1) {
+      return idx + 1;
+    }
+    return null;
+  }
+
   Widget _buildConventionEditorPane({double width = 380}) {
     final lines = _conventionEditorController.text
         .split(RegExp(r'\r?\n'))
         .where((l) => l.trim().isNotEmpty)
         .toList();
     final lineCount = lines.length;
-    final mediaClips = _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
+    final mediaClips =
+        _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
     final totalClips = mediaClips.length;
     final matchedCount = _livePastedOverrides.keys
         .where((k) => !_duplicateClipConflicts.containsKey(k))
         .length;
 
     final theme = Theme.of(context);
-    final hasFocus = _conventionEditorPanelFocusNode.hasFocus || _conventionEditorFocusNode.hasFocus;
+    final hasFocus =
+        _conventionEditorPanelFocusNode.hasFocus ||
+        _conventionEditorFocusNode.hasFocus;
 
     return SizedBox(
       width: width,
@@ -1470,227 +1912,270 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
           child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Top bar
-              Row(
-                children: [
-                  Icon(Icons.edit_note_rounded, color: theme.colorScheme.primary, size: 20),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Convención de Texto',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                      overflow: TextOverflow.ellipsis,
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Top bar
+                Row(
+                  children: [
+                    Icon(
+                      Icons.edit_note_rounded,
+                      color: theme.colorScheme.primary,
+                      size: 20,
                     ),
-                  ),
-                  Tooltip(
-                    message: 'Pegar desde el portapapeles',
-                    child: IconButton(
-                      icon: const Icon(Icons.paste_rounded, size: 18),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: _pasteFromClipboard,
-                    ),
-                  ),
-                  Tooltip(
-                    message: 'Limpiar texto',
-                    child: IconButton(
-                      icon: const Icon(Icons.clear_all_rounded, size: 18),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: _clearConventionEditor,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              // Text Editor
-              Expanded(
-                child: TextField(
-                  key: const ValueKey('studio_convention_editor_field'),
-                  controller: _conventionEditorController,
-                  undoController: _conventionEditorUndoController,
-                  focusNode: _conventionEditorFocusNode,
-                  enableInteractiveSelection: true,
-                  maxLines: null,
-                  expands: true,
-                  textAlignVertical: TextAlignVertical.top,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Pega o escribe aquí la lista de convenciones...\n\nEjemplo:\nA001C001_260608_R1_P1.MP4\nA001C002_260608_R1_P1.MP4',
-                    hintStyle: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      color: theme.hintColor.withValues(alpha: 0.6),
-                    ),
-                    border: const OutlineInputBorder(),
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
-                  onChanged: _onConventionTextChanged,
-                ),
-              ),
-              // Live Line-by-Line Inspection Section
-              Builder(
-                builder: (context) {
-                  final lineStatuses = _getConventionLineStatuses();
-                  if (lineStatuses.isEmpty) return const SizedBox.shrink();
-
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 8.0, bottom: 8.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Estado de Líneas en Vivo',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: theme.colorScheme.primary,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              '${lineStatuses.length} líneas',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: theme.hintColor,
-                              ),
-                            ),
-                          ],
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Convención de Texto',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
                         ),
-                        const SizedBox(height: 4),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 140),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: theme.brightness == Brightness.dark
-                                  ? Colors.black26
-                                  : Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
-                                color: theme.dividerColor.withValues(alpha: 0.3),
-                              ),
-                            ),
-                            child: Scrollbar(
-                              controller: _conventionLineStatusScrollController,
-                              thumbVisibility: true,
-                              child: ListView.builder(
-                                controller: _conventionLineStatusScrollController,
-                                primary: false,
-                                shrinkWrap: true,
-                                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
-                                itemCount: lineStatuses.length,
-                                itemBuilder: (context, i) {
-                                  final item = lineStatuses[i];
-                                  final isSelectedClipLine = item.targetFilePath != null &&
-                                      item.targetFilePath == _selectedStudioClip?.originalFilePath;
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Tooltip(
+                      message: 'Pegar desde el portapapeles',
+                      child: IconButton(
+                        icon: const Icon(Icons.paste_rounded, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _pasteFromClipboard,
+                      ),
+                    ),
+                    Tooltip(
+                      message: 'Limpiar texto',
+                      child: IconButton(
+                        icon: const Icon(Icons.clear_all_rounded, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _clearConventionEditor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // Text Editor with Code Gutter Line Numbers
+                Expanded(
+                  child: LineNumberedTextField(
+                    controller: _conventionEditorController,
+                    undoController: _conventionEditorUndoController,
+                    focusNode: _conventionEditorFocusNode,
+                    activeLineNumber: _activeConventionEditorLineNumber,
+                    hintText:
+                        'Pega o escribe aquí la lista de convenciones...\n\nEjemplo:\nMNBOENC_080626_17_11_T1_A001_1_D1_U3',
+                    onChanged: _onConventionTextChanged,
+                  ),
+                ),
+                // Live Line-by-Line Inspection Section
+                Builder(
+                  builder: (context) {
+                    final lineStatuses = _getConventionLineStatuses();
+                    if (lineStatuses.isEmpty) return const SizedBox.shrink();
 
-                                  return InkWell(
-                                    onTap: item.targetFilePath != null
-                                        ? () {
-                                            _scrollToClip(item.targetFilePath!);
-                                            if (_isStudioMode && _report != null) {
-                                              final matches = _report!.proposals
-                                                  .where((p) => p.originalFilePath == item.targetFilePath)
-                                                  .toList();
-                                              if (matches.isNotEmpty) {
-                                                _selectStudioClip(matches.first);
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8.0, bottom: 8.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Estado de Líneas en Vivo',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${lineStatuses.length} líneas',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: theme.hintColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 140),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: theme.brightness == Brightness.dark
+                                    ? Colors.black26
+                                    : Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                  color: theme.dividerColor.withValues(
+                                    alpha: 0.3,
+                                  ),
+                                ),
+                              ),
+                              child: Scrollbar(
+                                controller:
+                                    _conventionLineStatusScrollController,
+                                thumbVisibility: true,
+                                child: ListView.builder(
+                                  controller:
+                                      _conventionLineStatusScrollController,
+                                  primary: false,
+                                  shrinkWrap: true,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 4,
+                                    horizontal: 6,
+                                  ),
+                                  itemCount: lineStatuses.length,
+                                  itemBuilder: (context, i) {
+                                    final item = lineStatuses[i];
+                                    final isSelectedClipLine =
+                                        item.targetFilePath != null &&
+                                        item.targetFilePath ==
+                                            _selectedStudioClip
+                                                ?.originalFilePath;
+
+                                    return InkWell(
+                                      onTap: item.targetFilePath != null
+                                          ? () {
+                                              _scrollToClip(
+                                                item.targetFilePath!,
+                                              );
+                                              if (_isStudioMode &&
+                                                  _report != null) {
+                                                final matches = _report!
+                                                    .proposals
+                                                    .where(
+                                                      (p) =>
+                                                          p.originalFilePath ==
+                                                          item.targetFilePath,
+                                                    )
+                                                    .toList();
+                                                if (matches.isNotEmpty) {
+                                                  _selectStudioClip(
+                                                    matches.first,
+                                                  );
+                                                }
                                               }
                                             }
-                                          }
-                                        : null,
-                                    borderRadius: BorderRadius.circular(4),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(vertical: 3.0, horizontal: 4.0),
-                                      decoration: BoxDecoration(
-                                        color: isSelectedClipLine
-                                            ? theme.colorScheme.primary.withValues(alpha: theme.brightness == Brightness.dark ? 0.3 : 0.15)
-                                            : null,
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: isSelectedClipLine
-                                            ? Border.all(color: theme.colorScheme.primary, width: 1.5)
-                                            : null,
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Icon(item.icon, size: 14, color: item.color),
-                                          const SizedBox(width: 6),
-                                          Expanded(
-                                            child: Text(
-                                              item.text,
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: isSelectedClipLine ? FontWeight.bold : FontWeight.w500,
-                                                color: isSelectedClipLine ? theme.colorScheme.primary : item.color,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
+                                          : null,
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 3.0,
+                                          horizontal: 4.0,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: isSelectedClipLine
+                                              ? theme.colorScheme.primary
+                                                    .withValues(
+                                                      alpha:
+                                                          theme.brightness ==
+                                                              Brightness.dark
+                                                          ? 0.3
+                                                          : 0.15,
+                                                    )
+                                              : null,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
                                           ),
-                                        ],
+                                          border: isSelectedClipLine
+                                              ? Border.all(
+                                                  color:
+                                                      theme.colorScheme.primary,
+                                                  width: 1.5,
+                                                )
+                                              : null,
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              item.icon,
+                                              size: 14,
+                                              color: item.color,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              child: Text(
+                                                item.text,
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: isSelectedClipLine
+                                                      ? FontWeight.bold
+                                                      : FontWeight.w500,
+                                                  color: isSelectedClipLine
+                                                      ? theme
+                                                            .colorScheme
+                                                            .primary
+                                                      : item.color,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                  );
-                                },
+                                    );
+                                  },
+                                ),
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 10),
+                // Bottom bar
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Líneas: $lineCount | Clips coincidentes: $matchedCount/$totalClips',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: theme.hintColor,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            icon: const Icon(Icons.check, size: 16),
+                            label: Text(
+                              'Aplicar Coincidencias ($matchedCount)',
+                            ),
+                            onPressed: matchedCount > 0
+                                ? _applyNonBlockingMatches
+                                : null,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.undo, size: 16),
+                          label: const Text('Deshacer'),
+                          onPressed: _previousReportBeforePaste != null
+                              ? _undoPastedMatches
+                              : null,
                         ),
                       ],
                     ),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              // Bottom bar
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Líneas: $lineCount | Clips coincidentes: $matchedCount/$totalClips',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: theme.hintColor,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.icon(
-                          icon: const Icon(Icons.check, size: 16),
-                          label: Text('Aplicar Coincidencias ($matchedCount)'),
-                          onPressed: matchedCount > 0 ? _applyNonBlockingMatches : null,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        icon: const Icon(Icons.undo, size: 16),
-                        label: const Text('Deshacer'),
-                        onPressed: _previousReportBeforePaste != null ? _undoPastedMatches : null,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ],
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   bool _isPlayableVideo(String? filePath) {
     if (filePath == null) return false;
@@ -1701,7 +2186,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void _openMediaPreview(RenameProposal proposal) {
     if (_report == null) return;
     final playlist = _report!.proposals
-        .where((p) => p.originalFilePath != null && _isPlayableVideo(p.originalFilePath))
+        .where(
+          (p) =>
+              p.originalFilePath != null &&
+              _isPlayableVideo(p.originalFilePath),
+        )
         .toList();
     if (playlist.isEmpty) return;
 
@@ -1714,7 +2203,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         initialIndex: initialIndex >= 0 ? initialIndex : 0,
         projectMetadata: _project.log.metadata,
         activeCamera: _project.activeCamera,
-        reelOverride: _reelController.text.trim().isNotEmpty ? _reelController.text.trim() : null,
+        reelOverride: _reelController.text.trim().isNotEmpty
+            ? _reelController.text.trim()
+            : null,
         autoSortByClip: _project.autoSortByClip,
         onAutoSortChanged: (val) {
           setState(() {
@@ -1723,27 +2214,44 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           });
         },
         onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {
-          final clipNum = ClipMatcherService.extractClipNumber(prop.originalFilePath ?? '');
-          final fileReel = prop.fileReel ?? ClipMatcherService.extractReel(prop.originalFilePath ?? '');
+          final clipNum = ClipMatcherService.extractClipNumber(
+            prop.originalFilePath ?? '',
+          );
+          final fileReel =
+              prop.fileReel ??
+              ClipMatcherService.extractReel(prop.originalFilePath ?? '');
           final targetReel = _reelController.text.trim().isNotEmpty
               ? _reelController.text.trim()
               : (fileReel ?? _project.defaultReel);
 
           final records = List<ShotRecord>.from(_project.log.records);
-          final existingIdx = records.indexWhere((r) =>
-              (chapter.isEmpty || r.chapter.trim() == chapter.trim()) &&
-              r.scene.trim() == scene.trim() &&
-              (r.plane ?? '').trim() == plane.trim() &&
-              r.take.trim() == take.trim());
+          final existingIdx = records.indexWhere(
+            (r) =>
+                (chapter.isEmpty || r.chapter.trim() == chapter.trim()) &&
+                r.scene.trim() == scene.trim() &&
+                (r.plane ?? '').trim() == plane.trim() &&
+                r.take.trim() == take.trim(),
+          );
 
           if (existingIdx != -1) {
             final existing = records[existingIdx];
-            final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
-            final camIdx = updatedCameras.indexWhere((c) => c.cameraName == _project.activeCamera);
+            final updatedCameras = List<CameraTakeRecord>.from(
+              existing.cameras,
+            );
+            final camIdx = updatedCameras.indexWhere(
+              (c) => c.cameraName == _project.activeCamera,
+            );
             if (camIdx != -1) {
-              updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(clipName: clipNum);
+              updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(
+                clipName: clipNum,
+              );
             } else {
-              updatedCameras.add(CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum));
+              updatedCameras.add(
+                CameraTakeRecord(
+                  cameraName: _project.activeCamera,
+                  clipName: clipNum,
+                ),
+              );
             }
 
             records[existingIdx] = existing.copyWith(
@@ -1762,7 +2270,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               plane: plane.isNotEmpty ? plane : null,
               take: take,
               cameras: [
-                CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum),
+                CameraTakeRecord(
+                  cameraName: _project.activeCamera,
+                  clipName: clipNum,
+                ),
               ],
               reel: targetReel,
               tcIn: prop.fileTcIn,
@@ -1775,7 +2286,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
           final List<ShotRecord> finalRecords;
           if (_project.autoSortByClip) {
-            finalRecords = BitacoraEditorTab.sortRecordsByClip(records, _project.activeCamera);
+            finalRecords = BitacoraEditorTab.sortRecordsByClip(
+              records,
+              _project.activeCamera,
+            );
           } else {
             finalRecords = records;
           }
@@ -1813,6 +2327,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _studioSceneController.text = rec.scene;
         _studioPlaneController.text = rec.plane ?? '';
         _studioTakeController.text = rec.take;
+        final recReel = rec.reel.trim();
+        _studioReelController.text = recReel.isNotEmpty
+            ? recReel
+            : (_lastSelectedReel ?? _project.defaultReel);
+        _lastSelectedReel = _studioReelController.text;
         _studioNotesController.text = rec.observations ?? '';
         _studioIsMos = rec.isMos;
         _studioIsTf = rec.isTf;
@@ -1825,6 +2344,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _studioSceneController.text = '';
         _studioPlaneController.text = '';
         _studioTakeController.text = '1';
+        _studioReelController.text = _lastSelectedReel ?? _project.defaultReel;
         _studioNotesController.text = '';
         _studioIsMos = false;
         _studioIsTf = false;
@@ -1875,7 +2395,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         for (int i = 0; i < rawLines.length; i++) {
           final trimmed = rawLines[i].trim();
           if (trimmed.isEmpty) continue;
-          final parsed = QuickPasteConventionDialog.parsePastedLine(trimmed, i + 1);
+          final parsed = QuickPasteConventionDialog.parsePastedLine(
+            trimmed,
+            i + 1,
+          );
           if (parsed.hasExtractedClip && parsed.clipNumber == clipNum) {
             if (parsed.reel == null || parsed.reel!.toUpperCase() == reel) {
               targetLineIndex = i + 1;
@@ -1924,7 +2447,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final currentNotes = _studioNotesController.text.trim();
 
     if (rec == null) {
-      return currentScene.isNotEmpty || (currentTake.isNotEmpty && currentTake != '1');
+      return currentCap.isNotEmpty ||
+          currentScene.isNotEmpty ||
+          (currentTake.isNotEmpty && currentTake != '1') ||
+          _studioIsMos ||
+          _studioIsTf ||
+          _studioIsDs ||
+          _studioIsFf ||
+          _studioIsGpr ||
+          _studioIsDr;
     }
 
     return currentCap != rec.chapter.trim() ||
@@ -1952,42 +2483,50 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       return override;
     }
 
-    final origExt = clip.originalFilePath != null ? p.extension(clip.originalFilePath!) : '';
-    final clipNum = ClipMatcherService.extractClipNumber(clip.originalFilePath ?? '');
-    final fileReel = clip.fileReel ?? ClipMatcherService.extractReel(clip.originalFilePath ?? '');
+    final origExt = clip.originalFilePath != null
+        ? p.extension(clip.originalFilePath!)
+        : '';
+    final clipNum = ClipMatcherService.extractClipNumber(
+      clip.originalFilePath ?? '',
+    );
+    final fileReel =
+        clip.fileReel ??
+        ClipMatcherService.extractReel(clip.originalFilePath ?? '');
     final defaultReel = _reelController.text.trim().isNotEmpty
         ? _reelController.text.trim()
-        : (fileReel ?? clip.associatedRecord?.reel ?? '${_project.activeCamera}001');
+        : (fileReel ??
+              clip.associatedRecord?.reel ??
+              '${_project.activeCamera}001');
 
     final capText = _studioChapterController.text.trim();
     final cap = _project.showChapter
         ? (capText.isNotEmpty
-            ? capText
-            : (clip.associatedRecord?.chapter.trim().isNotEmpty == true
-                ? clip.associatedRecord!.chapter.trim()
-                : '1'))
+              ? capText
+              : (clip.associatedRecord?.chapter.trim().isNotEmpty == true
+                    ? clip.associatedRecord!.chapter.trim()
+                    : '1'))
         : null;
 
     final sceneText = _studioSceneController.text.trim();
     final scene = sceneText.isNotEmpty
         ? sceneText
         : (clip.associatedRecord?.scene.trim().isNotEmpty == true
-            ? clip.associatedRecord!.scene.trim()
-            : '1');
+              ? clip.associatedRecord!.scene.trim()
+              : '1');
 
     final planeText = _studioPlaneController.text.trim();
     final plane = _project.showPlane
         ? (planeText.isNotEmpty
-            ? planeText
-            : clip.associatedRecord?.plane?.trim())
+              ? planeText
+              : clip.associatedRecord?.plane?.trim())
         : null;
 
     final takeText = _studioTakeController.text.trim();
     var rawTake = takeText.isNotEmpty
         ? takeText
         : (clip.associatedRecord?.take.trim().isNotEmpty == true
-            ? clip.associatedRecord!.take.trim()
-            : '1');
+              ? clip.associatedRecord!.take.trim()
+              : '1');
 
     if (!_studioIsTf && rawTake.toUpperCase().startsWith('TF')) {
       rawTake = rawTake.substring(2);
@@ -2010,14 +2549,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final unit = _studioIsDs
         ? 'DS'
         : (_project.log.metadata.unit.trim().isNotEmpty
-            ? _project.log.metadata.unit.trim()
-            : 'U1');
+              ? _project.log.metadata.unit.trim()
+              : 'U1');
 
     final prod = _project.log.metadata.nomenclature.trim().isNotEmpty
         ? _project.log.metadata.nomenclature.trim()
         : (_project.log.metadata.production.trim().isNotEmpty
-            ? _project.log.metadata.production.trim()
-            : 'PROD');
+              ? _project.log.metadata.production.trim()
+              : 'PROD');
 
     String? normalizedClip;
     final recClip = clip.associatedRecord?.cameras
@@ -2029,21 +2568,35 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         : clipNum;
     if (candidateClip.isNotEmpty) {
       final parsed = int.tryParse(candidateClip);
-      normalizedClip = parsed != null ? parsed.toString().padLeft(2, '0') : candidateClip;
+      normalizedClip = parsed != null
+          ? parsed.toString().padLeft(2, '0')
+          : candidateClip;
     }
+
+    final reelText = _studioReelController.text.trim();
+    final effectiveReel = reelText.isNotEmpty ? reelText : defaultReel;
+
+    final detectedCamera = clip.originalFilePath != null
+        ? ClipMatcherService.extractCamera(
+            clip.originalFilePath!,
+            fallback: _project.activeCamera,
+          )
+        : _project.activeCamera;
 
     final base = ConventionNameGenerator.generate(
       nomenclature: prod,
       chapter: cap,
-      date: _project.log.metadata.date.trim().isNotEmpty ? _project.log.metadata.date.trim() : '010126',
+      date: _project.log.metadata.date.trim().isNotEmpty
+          ? _project.log.metadata.date.trim()
+          : '010126',
       scene: scene,
       plane: plane,
       take: rawTake,
-      reel: defaultReel,
+      reel: effectiveReel,
       day: day,
       clipIndex: normalizedClip,
       unit: unit,
-      activeCamera: _project.activeCamera,
+      activeCamera: detectedCamera,
       isTf: _studioIsTf,
       isDs: _studioIsDs,
       isFf: _studioIsFf,
@@ -2054,58 +2607,78 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     return '$base$origExt';
   }
 
-  Future<void> _saveStudioSlate() async {
-    if (_selectedStudioClip == null) return;
-    final prop = _selectedStudioClip!;
+  void _onStudioSlateFieldChanged() {
+    if (_selectedStudioClip == null || _report == null) return;
+    final clip = _selectedStudioClip!;
+    final clips = _studioMediaClips;
+    final clipIndex =
+        clips.indexWhere((c) => c.originalFilePath == clip.originalFilePath) +
+        1;
+    if (clipIndex <= 0) return;
 
     final chapter = _studioChapterController.text.trim();
     final scene = _studioSceneController.text.trim();
     final plane = _studioPlaneController.text.trim();
     final take = _studioTakeController.text.trim();
+    final reel = _studioReelController.text.trim().isNotEmpty
+        ? _studioReelController.text.trim()
+        : _project.defaultReel;
+    _lastSelectedReel = reel;
     final notes = _studioNotesController.text.trim();
-    final isMos = _studioIsMos;
-    final isTf = _studioIsTf;
-    final isDs = _studioIsDs;
-    final isFf = _studioIsFf;
-    final isGpr = _studioIsGpr;
-    final isDr = _studioIsDr;
+    final camera = clip.originalFilePath != null
+        ? ClipMatcherService.extractCamera(
+            clip.originalFilePath!,
+            fallback: _project.activeCamera,
+          )
+        : _project.activeCamera;
+    final clipNum = ClipMatcherService.extractClipNumber(
+      clip.originalFilePath ?? '',
+    );
 
-    final clipNum = ClipMatcherService.extractClipNumber(prop.originalFilePath ?? '');
-    final fileReel = prop.fileReel ?? ClipMatcherService.extractReel(prop.originalFilePath ?? '');
-    final targetReel = _reelController.text.trim().isNotEmpty
-        ? _reelController.text.trim()
-        : (fileReel ?? _project.defaultReel);
-
+    // Update or create ShotRecord
     final records = List<ShotRecord>.from(_project.log.records);
-    final existingIdx = records.indexWhere((r) =>
-        (chapter.isEmpty || r.chapter.trim() == chapter) &&
-        r.scene.trim() == scene &&
-        (r.plane ?? '').trim() == plane &&
-        r.take.trim() == take);
+    int existingIdx = -1;
+    if (clip.associatedRecord != null) {
+      existingIdx = records.indexWhere(
+        (r) => r.id == clip.associatedRecord!.id,
+      );
+    }
+    if (existingIdx == -1) {
+      existingIdx = records.indexWhere(
+        (r) => r.cameras.any(
+          (c) => c.clipName == clipNum && c.cameraName == camera,
+        ),
+      );
+    }
 
     if (existingIdx != -1) {
       final existing = records[existingIdx];
       final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
-      final camIdx = updatedCameras.indexWhere((c) => c.cameraName == _project.activeCamera);
+      final camIdx = updatedCameras.indexWhere((c) => c.cameraName == camera);
       if (camIdx != -1) {
-        updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(clipName: clipNum);
+        updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(
+          clipName: clipNum,
+        );
       } else {
-        updatedCameras.add(CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum));
+        updatedCameras.add(
+          CameraTakeRecord(cameraName: camera, clipName: clipNum),
+        );
       }
 
       records[existingIdx] = existing.copyWith(
         chapter: chapter.isNotEmpty ? chapter : existing.chapter,
+        scene: scene.isNotEmpty ? scene : existing.scene,
+        plane: plane.isNotEmpty ? plane : null,
+        take: take.isNotEmpty ? take : existing.take,
         cameras: updatedCameras,
-        reel: targetReel.isNotEmpty ? targetReel : existing.reel,
-        tcIn: prop.fileTcIn ?? existing.tcIn,
-        tcOut: prop.fileTcOut ?? existing.tcOut,
+        reel: reel.isNotEmpty ? reel : existing.reel,
         observations: notes.isNotEmpty ? notes : existing.observations,
-        isMos: isMos,
-        isTf: isTf,
-        isDs: isDs,
-        isFf: isFf,
-        isGpr: isGpr,
-        isDr: isDr,
+        isMos: _studioIsMos,
+        isTf: _studioIsTf,
+        isDs: _studioIsDs,
+        isFf: _studioIsFf,
+        isGpr: _studioIsGpr,
+        isDr: _studioIsDr,
       );
     } else {
       final newRecord = ShotRecord(
@@ -2113,26 +2686,418 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         scene: scene,
         plane: plane.isNotEmpty ? plane : null,
         take: take.isNotEmpty ? take : '1',
-        cameras: [
-          CameraTakeRecord(cameraName: _project.activeCamera, clipName: clipNum),
-        ],
-        reel: targetReel,
-        tcIn: prop.fileTcIn,
-        tcOut: prop.fileTcOut,
+        cameras: [CameraTakeRecord(cameraName: camera, clipName: clipNum)],
+        reel: reel,
+        tcIn: clip.fileTcIn,
+        tcOut: clip.fileTcOut,
         observations: notes.isNotEmpty ? notes : null,
-        isMos: isMos,
-        isTf: isTf,
-        isDs: isDs,
-        isFf: isFf,
-        isGpr: isGpr,
-        isDr: isDr,
+        isMos: _studioIsMos,
+        isTf: _studioIsTf,
+        isDs: _studioIsDs,
+        isFf: _studioIsFf,
+        isGpr: _studioIsGpr,
+        isDr: _studioIsDr,
       );
       records.add(newRecord);
     }
 
+    _project = _project.copyWith(log: _project.log.copyWith(records: records));
+    _isDirty = true;
+
+    // Generate updated convention name
+    final newLine = ConventionGeneratorService.generateConventionName(
+      project: _project,
+      chapter: chapter,
+      scene: scene,
+      plane: plane.isNotEmpty ? plane : null,
+      take: take,
+      reel: reel,
+      camera: camera,
+      clipIndex: clipIndex,
+    );
+
+    final rawLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+    final lines = List<String>.from(rawLines);
+    while (lines.length < clipIndex) {
+      lines.add('');
+    }
+    lines[clipIndex - 1] = newLine;
+    final updatedText = lines.join('\n');
+
+    final oldSel = _conventionEditorController.selection;
+    _conventionEditorController.text = updatedText;
+    if (_conventionEditorFocusNode.hasFocus &&
+        oldSel.isValid &&
+        oldSel.end <= updatedText.length) {
+      _conventionEditorController.selection = oldSel;
+    }
+
+    setState(() {
+      _isStudioPendingSave = true;
+    });
+
+    _studioSaveDebounceTimer?.cancel();
+    _studioSaveDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      _saveStudioSlate(isAutoSave: true);
+    });
+  }
+
+  Future<void> _saveStudioSlate({bool isAutoSave = false}) async {
+    _studioSaveDebounceTimer?.cancel();
+    if (_selectedStudioClip == null) return;
+    final prop = _selectedStudioClip!;
+
+    setState(() {
+      _isStudioSaving = true;
+      _isStudioPendingSave = false;
+    });
+
+    try {
+      final chapter = _studioChapterController.text.trim();
+      final scene = _studioSceneController.text.trim();
+      final plane = _studioPlaneController.text.trim();
+      final take = _studioTakeController.text.trim();
+      final notes = _studioNotesController.text.trim();
+      final isMos = _studioIsMos;
+      final isTf = _studioIsTf;
+      final isDs = _studioIsDs;
+      final isFf = _studioIsFf;
+      final isGpr = _studioIsGpr;
+      final isDr = _studioIsDr;
+
+      final clipNum = ClipMatcherService.extractClipNumber(
+        prop.originalFilePath ?? '',
+      );
+      final fileReel =
+          prop.fileReel ??
+          ClipMatcherService.extractReel(prop.originalFilePath ?? '');
+      final targetReel = _studioReelController.text.trim().isNotEmpty
+          ? _studioReelController.text.trim()
+          : (_reelController.text.trim().isNotEmpty
+                ? _reelController.text.trim()
+                : (fileReel ?? _project.defaultReel));
+      _lastSelectedReel = targetReel;
+
+      final effectiveCamera = prop.originalFilePath != null
+          ? ClipMatcherService.extractCamera(
+              prop.originalFilePath!,
+              fallback: _project.activeCamera,
+            )
+          : _project.activeCamera;
+
+      final records = List<ShotRecord>.from(_project.log.records);
+      final existingIdx = records.indexWhere(
+        (r) =>
+            (chapter.isEmpty || r.chapter.trim() == chapter) &&
+            r.scene.trim() == scene &&
+            (r.plane ?? '').trim() == plane &&
+            r.take.trim() == take,
+      );
+
+      if (existingIdx != -1) {
+        final existing = records[existingIdx];
+        final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
+        final camIdx = updatedCameras.indexWhere(
+          (c) => c.cameraName.toUpperCase() == effectiveCamera.toUpperCase(),
+        );
+        if (camIdx != -1) {
+          updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(
+            clipName: clipNum,
+          );
+        } else {
+          updatedCameras.add(
+            CameraTakeRecord(
+              cameraName: effectiveCamera,
+              clipName: clipNum,
+            ),
+          );
+        }
+
+        records[existingIdx] = existing.copyWith(
+          chapter: chapter.isNotEmpty ? chapter : existing.chapter,
+          cameras: updatedCameras,
+          reel: targetReel.isNotEmpty ? targetReel : existing.reel,
+          tcIn: prop.fileTcIn ?? existing.tcIn,
+          tcOut: prop.fileTcOut ?? existing.tcOut,
+          observations: notes.isNotEmpty ? notes : existing.observations,
+          isMos: isMos,
+          isTf: isTf,
+          isDs: isDs,
+          isFf: isFf,
+          isGpr: isGpr,
+          isDr: isDr,
+        );
+      } else {
+        final newRecord = ShotRecord(
+          chapter: chapter,
+          scene: scene,
+          plane: plane.isNotEmpty ? plane : null,
+          take: take.isNotEmpty ? take : '1',
+          cameras: [
+            CameraTakeRecord(
+              cameraName: effectiveCamera,
+              clipName: clipNum,
+            ),
+          ],
+          reel: targetReel,
+          tcIn: prop.fileTcIn,
+          tcOut: prop.fileTcOut,
+          observations: notes.isNotEmpty ? notes : null,
+          isMos: isMos,
+          isTf: isTf,
+          isDs: isDs,
+          isFf: isFf,
+          isGpr: isGpr,
+          isDr: isDr,
+        );
+        records.add(newRecord);
+      }
+
+      final List<ShotRecord> finalRecords;
+      if (_project.autoSortByClip) {
+        finalRecords = BitacoraEditorTab.sortRecordsByClip(
+          records,
+          _project.activeCamera,
+        );
+      } else {
+        finalRecords = records;
+      }
+
+      setState(() {
+        _project = _project.copyWith(
+          log: ShootingLog(
+            metadata: _project.log.metadata,
+            records: finalRecords,
+          ),
+        );
+        _isDirty = true;
+      });
+
+      final clipIdx =
+          _studioMediaClips.indexWhere(
+            (c) => c.originalFilePath == prop.originalFilePath,
+          ) +
+          1;
+      if (clipIdx > 0) {
+        final convName = ConventionGeneratorService.generateConventionName(
+          project: _project,
+          chapter: chapter,
+          scene: scene,
+          plane: plane.isNotEmpty ? plane : null,
+          take: take,
+          reel: targetReel,
+          camera: effectiveCamera,
+          clipIndex: clipIdx,
+        );
+        if (prop.originalFilePath != null) {
+          _livePastedOverrides.remove(prop.originalFilePath!);
+          _livePastedLineNumbers.remove(prop.originalFilePath!);
+        }
+        final rawLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+        final lines = List<String>.from(rawLines);
+        while (lines.length < clipIdx) {
+          lines.add('');
+        }
+        lines[clipIdx - 1] = convName;
+        _conventionEditorController.text = lines.join('\n');
+      }
+
+      await _generatePreview();
+
+      if (prop.originalFilePath != null) {
+        if (_report != null) {
+          final updated = _report!.proposals
+              .where((p) => p.originalFilePath == prop.originalFilePath)
+              .toList();
+          if (updated.isNotEmpty) {
+            setState(() {
+              _selectedStudioClip = updated.first;
+            });
+          }
+        }
+        if (_selectedStudioClip != null && records.isNotEmpty) {
+          final updatedRec = records.firstWhere(
+            (r) =>
+                (chapter.isEmpty || r.chapter.trim() == chapter) &&
+                r.scene.trim() == scene &&
+                (r.plane ?? '').trim() == plane &&
+                r.take.trim() == take,
+            orElse: () => records.last,
+          );
+          setState(() {
+            _selectedStudioClip = _selectedStudioClip!.copyWith(
+              associatedRecord: updatedRec,
+            );
+          });
+        }
+      }
+      if (!isAutoSave) {
+        _showNotification('Metadatos de claqueta actualizados');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isStudioSaving = false;
+          _isStudioPendingSave = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _unlinkStudioClip(
+    RenameProposal clip,
+    String detectedCamera,
+  ) async {
+    final clipPath = clip.originalFilePath;
+    final clipNum = ClipMatcherService.extractClipNumber(clipPath ?? '');
+    final records = List<ShotRecord>.from(_project.log.records);
+
+    bool recordUpdated = false;
+    for (int i = 0; i < records.length; i++) {
+      final rec = records[i];
+      final hadMatchingCam = rec.cameras.any(
+        (c) =>
+            c.clipName == clipNum &&
+            c.cameraName.toUpperCase() == detectedCamera.toUpperCase(),
+      );
+      if (hadMatchingCam || (clip.associatedRecord != null && rec.id == clip.associatedRecord!.id)) {
+        final updatedCameras = rec.cameras.where((c) {
+          if (c.clipName == clipNum &&
+              c.cameraName.toUpperCase() == detectedCamera.toUpperCase()) {
+            return false;
+          }
+          if (clip.associatedRecord != null &&
+              rec.id == clip.associatedRecord!.id &&
+              c.cameraName.toUpperCase() == detectedCamera.toUpperCase()) {
+            return false;
+          }
+          return true;
+        }).toList();
+
+        records[i] = rec.copyWith(cameras: updatedCameras);
+        recordUpdated = true;
+      }
+    }
+
+    if (clipPath != null) {
+      _manualOverrides.remove(clipPath);
+      _livePastedOverrides.remove(clipPath);
+      _livePastedLineNumbers.remove(clipPath);
+    }
+
+    _studioChapterController.text = '';
+    _studioSceneController.text = '';
+    _studioPlaneController.text = '';
+    _studioTakeController.text = '1';
+    _studioReelController.text = _lastSelectedReel ?? _project.defaultReel;
+    _studioNotesController.text = '';
+    _studioIsMos = false;
+    _studioIsTf = false;
+    _studioIsDs = false;
+    _studioIsFf = false;
+    _studioIsGpr = false;
+    _studioIsDr = false;
+
+    if (recordUpdated) {
+      _project = _project.copyWith(
+        log: ShootingLog(
+          metadata: _project.log.metadata,
+          records: records,
+        ),
+      );
+      _isDirty = true;
+    }
+
+    await _generatePreview();
+
+    if (_report != null && clipPath != null) {
+      final updated = _report!.proposals
+          .where((p) => p.originalFilePath == clipPath)
+          .toList();
+      if (updated.isNotEmpty) {
+        setState(() {
+          _selectedStudioClip = updated.first;
+        });
+      }
+    }
+    _showNotification('Toma desvinculada');
+  }
+
+  Future<void> _openTakeLinkerDialog(
+    RenameProposal clip,
+    String detectedCamera,
+  ) async {
+    final result = await TakeLinkerDialog.show(
+      context,
+      clip: clip,
+      records: _project.log.records,
+      activeCamera: detectedCamera,
+      currentlyLinkedRecord: clip.associatedRecord,
+    );
+
+    if (result != null) {
+      if (result.action == TakeLinkerAction.link && result.record != null) {
+        await _linkStudioClipToRecord(clip, result.record!, detectedCamera);
+      } else if (result.action == TakeLinkerAction.unlink) {
+        await _unlinkStudioClip(clip, detectedCamera);
+      }
+    }
+  }
+
+  Future<void> _linkStudioClipToRecord(
+    RenameProposal clip,
+    ShotRecord targetRecord,
+    String detectedCamera,
+  ) async {
+    final clipNum = ClipMatcherService.extractClipNumber(
+      clip.originalFilePath ?? '',
+    );
+    final records = List<ShotRecord>.from(_project.log.records);
+    final recIdx = records.indexWhere((r) => r.id == targetRecord.id);
+    if (recIdx == -1) return;
+
+    final existing = records[recIdx];
+    final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
+    final camIdx = updatedCameras.indexWhere(
+      (c) => c.cameraName.toUpperCase() == detectedCamera.toUpperCase(),
+    );
+    if (camIdx != -1) {
+      updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(
+        clipName: clipNum,
+      );
+    } else {
+      updatedCameras.add(
+        CameraTakeRecord(cameraName: detectedCamera, clipName: clipNum),
+      );
+    }
+
+    final updatedRecord = existing.copyWith(
+      cameras: updatedCameras,
+      tcIn: existing.tcIn ?? clip.fileTcIn,
+      tcOut: existing.tcOut ?? clip.fileTcOut,
+    );
+    records[recIdx] = updatedRecord;
+
+    _studioChapterController.text = updatedRecord.chapter;
+    _studioSceneController.text = updatedRecord.scene;
+    _studioPlaneController.text = updatedRecord.plane ?? '';
+    _studioTakeController.text = updatedRecord.take;
+    _studioReelController.text = updatedRecord.reel;
+    _lastSelectedReel = updatedRecord.reel;
+    _studioNotesController.text = updatedRecord.observations ?? '';
+    _studioIsMos = updatedRecord.isMos;
+    _studioIsTf = updatedRecord.isTf;
+    _studioIsDs = updatedRecord.isDs;
+    _studioIsFf = updatedRecord.isFf;
+    _studioIsGpr = updatedRecord.isGpr;
+    _studioIsDr = updatedRecord.isDr;
+
     final List<ShotRecord> finalRecords;
     if (_project.autoSortByClip) {
-      finalRecords = BitacoraEditorTab.sortRecordsByClip(records, _project.activeCamera);
+      finalRecords = BitacoraEditorTab.sortRecordsByClip(
+        records,
+        _project.activeCamera,
+      );
     } else {
       finalRecords = records;
     }
@@ -2147,43 +3112,87 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _isDirty = true;
     });
 
-    if (prop.originalFilePath != null) {
-      _livePastedOverrides.remove(prop.originalFilePath);
-      _livePastedLineNumbers.remove(prop.originalFilePath);
+    final clips = _studioMediaClips;
+    final clipIdx =
+        clips.indexWhere(
+          (c) => c.originalFilePath == clip.originalFilePath,
+        ) +
+        1;
+    if (clipIdx > 0) {
+      final convName = ConventionGeneratorService.generateConventionName(
+        project: _project,
+        chapter: updatedRecord.chapter,
+        scene: updatedRecord.scene,
+        plane: updatedRecord.plane,
+        take: updatedRecord.take,
+        reel: updatedRecord.reel,
+        camera: detectedCamera,
+        clipIndex: clipIdx,
+      );
+      if (clip.originalFilePath != null) {
+        _livePastedOverrides[clip.originalFilePath!] = convName;
+        _livePastedLineNumbers[clip.originalFilePath!] = clipIdx;
+      }
+      final rawLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+      final lines = List<String>.from(rawLines);
+      while (lines.length < clipIdx) {
+        lines.add('');
+      }
+      lines[clipIdx - 1] = convName;
+      _conventionEditorController.text = lines.join('\n');
     }
 
     await _generatePreview();
 
-    if (_report != null && prop.originalFilePath != null) {
-      final updated = _report!.proposals.where((p) => p.originalFilePath == prop.originalFilePath).toList();
+    if (_report != null && clip.originalFilePath != null) {
+      final updated = _report!.proposals
+          .where((p) => p.originalFilePath == clip.originalFilePath)
+          .toList();
       if (updated.isNotEmpty) {
         setState(() {
           _selectedStudioClip = updated.first;
         });
       }
     }
-    _showNotification('Metadatos de claqueta actualizados');
+
+    _showNotification('Clip vinculado a la toma de Cámara $detectedCamera');
   }
 
   Widget _buildCompactStatusBadge(RenameProposal proposal) {
-    if (proposal.originalFilePath != null && _duplicateClipConflicts.containsKey(proposal.originalFilePath)) {
+    if (proposal.originalFilePath != null &&
+        _duplicateClipConflicts.containsKey(proposal.originalFilePath)) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: Colors.red.shade700,
           borderRadius: BorderRadius.circular(4),
         ),
-        child: const Text('Conflicto', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+        child: const Text(
+          'Conflicto',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       );
     }
-    if (proposal.originalFilePath != null && _livePastedOverrides.containsKey(proposal.originalFilePath)) {
+    if (proposal.originalFilePath != null &&
+        _livePastedOverrides.containsKey(proposal.originalFilePath)) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: Colors.green.shade700,
           borderRadius: BorderRadius.circular(4),
         ),
-        child: const Text('✓ Texto', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+        child: const Text(
+          '✓ Texto',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       );
     }
     Color color = Colors.grey;
@@ -2217,12 +3226,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         color: color,
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 9,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 
   Widget _buildStudioMediaList() {
-    final mediaClips = _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
+    final mediaClips = _studioMediaClips;
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final hasFocus = _studioMediaListFocusNode.hasFocus;
@@ -2241,134 +3257,224 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
         ),
         child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: theme.dividerColor.withValues(alpha: 0.3),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(
+                    color: theme.dividerColor.withValues(alpha: 0.3),
+                  ),
                 ),
               ),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.video_library_rounded, size: 18, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Clips de Medios (${mediaClips.length})',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                    overflow: TextOverflow.ellipsis,
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.video_library_rounded,
+                    size: 18,
+                    color: theme.colorScheme.primary,
                   ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: mediaClips.isEmpty
-                ? Center(
+                  const SizedBox(width: 8),
+                  Expanded(
                     child: Text(
-                      'Sin clips de video',
-                      style: TextStyle(color: theme.hintColor, fontSize: 12),
+                      'Clips de Medios (${mediaClips.length})',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  )
-                : ListView.builder(
-                    controller: _studioMediaListScrollController,
-                    itemCount: mediaClips.length,
-                    itemBuilder: (context, i) {
-                      final clip = mediaClips[i];
-                      final isSelected = _selectedStudioClip?.originalFilePath == clip.originalFilePath;
-                      final fileName = clip.originalFilePath != null
-                          ? p.basename(clip.originalFilePath!)
-                          : clip.proposedFileName;
-                      final reel = _getProposalReel(clip);
-                      final clipNum = ClipMatcherService.extractClipNumber(fileName);
-                      final isLiveMatched = clip.originalFilePath != null &&
-                          _livePastedOverrides.containsKey(clip.originalFilePath) &&
-                          !_duplicateClipConflicts.containsKey(clip.originalFilePath);
-                      final isConflict = clip.originalFilePath != null &&
-                          _duplicateClipConflicts.containsKey(clip.originalFilePath);
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: mediaClips.isEmpty
+                  ? Center(
+                      child: Text(
+                        'Sin clips de video',
+                        style: TextStyle(color: theme.hintColor, fontSize: 12),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _studioMediaListScrollController,
+                      itemCount: mediaClips.length,
+                      itemBuilder: (context, i) {
+                        final clip = mediaClips[i];
+                        final isSelected =
+                            _selectedStudioClip?.originalFilePath ==
+                            clip.originalFilePath;
+                        final fileName = clip.originalFilePath != null
+                            ? p.basename(clip.originalFilePath!)
+                            : clip.proposedFileName;
+                        final reel = _getProposalReel(clip);
+                        final clipNum = ClipMatcherService.extractClipNumber(
+                          fileName,
+                        );
+                        final isLiveMatched =
+                            clip.originalFilePath != null &&
+                            _livePastedOverrides.containsKey(
+                              clip.originalFilePath,
+                            ) &&
+                            !_duplicateClipConflicts.containsKey(
+                              clip.originalFilePath,
+                            );
+                        final isConflict =
+                            clip.originalFilePath != null &&
+                            _duplicateClipConflicts.containsKey(
+                              clip.originalFilePath,
+                            );
 
-                      Color? rowBg;
-                      if (isSelected) {
-                        rowBg = theme.colorScheme.primary.withValues(alpha: isDark ? 0.25 : 0.15);
-                      } else if (isLiveMatched) {
-                        rowBg = Colors.green.withValues(alpha: 0.08);
-                      }
+                        Color? rowBg;
+                        if (isSelected) {
+                          rowBg = theme.colorScheme.primary.withValues(
+                            alpha: isDark ? 0.25 : 0.15,
+                          );
+                        } else if (isLiveMatched) {
+                          rowBg = Colors.green.withValues(alpha: 0.08);
+                        }
 
-                      return InkWell(
-                        key: ValueKey('studio_clip_$i'),
-                        onTap: () {
-                          _studioMediaListFocusNode.requestFocus();
-                          _selectStudioClip(clip);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: rowBg,
-                            border: Border(
-                              bottom: BorderSide(
-                                color: theme.dividerColor.withValues(alpha: 0.15),
+                        return InkWell(
+                          key: ValueKey('studio_clip_$i'),
+                          onTap: () {
+                            _studioMediaListFocusNode.requestFocus();
+                            _selectStudioClip(clip);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: rowBg,
+                              border: Border(
+                                bottom: BorderSide(
+                                  color: theme.dividerColor.withValues(
+                                    alpha: 0.15,
+                                  ),
+                                ),
+                                left: isSelected
+                                    ? BorderSide(
+                                        color: theme.colorScheme.primary,
+                                        width: 3,
+                                      )
+                                    : BorderSide.none,
                               ),
-                              left: isSelected
-                                  ? BorderSide(color: theme.colorScheme.primary, width: 3)
-                                  : BorderSide.none,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isConflict
+                                      ? Icons.warning_amber_rounded
+                                      : (isLiveMatched
+                                            ? Icons.check_circle
+                                            : Icons.movie_outlined),
+                                  size: 18,
+                                  color: isConflict
+                                      ? Colors.red
+                                      : (isLiveMatched
+                                            ? Colors.green
+                                            : (isSelected
+                                                  ? theme.colorScheme.primary
+                                                  : theme.hintColor)),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          if (_project.activeCamera
+                                                  .toUpperCase() ==
+                                              'ALL') ...[
+                                            Container(
+                                              margin: const EdgeInsets.only(
+                                                right: 6,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 5,
+                                                    vertical: 1,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: theme
+                                                    .colorScheme
+                                                    .primary
+                                                    .withValues(
+                                                      alpha: isDark
+                                                          ? 0.3
+                                                          : 0.15,
+                                                    ),
+                                                borderRadius:
+                                                    BorderRadius.circular(3),
+                                                border: Border.all(
+                                                  color: theme
+                                                      .colorScheme
+                                                      .primary
+                                                      .withValues(alpha: 0.5),
+                                                  width: 0.8,
+                                                ),
+                                              ),
+                                              child: Text(
+                                                '[CAM ${ClipMatcherService.extractCamera(clip.originalFilePath ?? fileName)}]',
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: theme
+                                                      .colorScheme
+                                                      .primary,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                          Expanded(
+                                            child: Text(
+                                              fileName,
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: isSelected
+                                                    ? FontWeight.bold
+                                                    : FontWeight.w500,
+                                                color: isSelected
+                                                    ? theme.colorScheme.primary
+                                                    : null,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Reel: $reel | Clip: #$clipNum${clip.associatedRecord != null ? ' | Esc: ${clip.associatedRecord!.scene} T: ${clip.associatedRecord!.take}' : ''}',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: theme.hintColor,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                _buildCompactStatusBadge(clip),
+                              ],
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                isConflict
-                                    ? Icons.warning_amber_rounded
-                                    : (isLiveMatched ? Icons.check_circle : Icons.movie_outlined),
-                                size: 18,
-                                color: isConflict
-                                    ? Colors.red
-                                    : (isLiveMatched
-                                        ? Colors.green
-                                        : (isSelected ? theme.colorScheme.primary : theme.hintColor)),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      fileName,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                                        color: isSelected ? theme.colorScheme.primary : null,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      'Reel: $reel | Clip: #$clipNum${clip.associatedRecord != null ? ' | Esc: ${clip.associatedRecord!.scene} T: ${clip.associatedRecord!.take}' : ''}',
-                                      style: TextStyle(fontSize: 10, color: theme.hintColor),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              _buildCompactStatusBadge(clip),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildStudioCenterInspector() {
     final theme = Theme.of(context);
@@ -2393,9 +3499,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.video_library_outlined, size: 56, color: theme.hintColor.withValues(alpha: 0.5)),
+                Icon(
+                  Icons.video_library_outlined,
+                  size: 56,
+                  color: theme.hintColor.withValues(alpha: 0.5),
+                ),
                 const SizedBox(height: 12),
-                const Text('Ningún clip seleccionado', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                const Text(
+                  'Ningún clip seleccionado',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
                 const SizedBox(height: 4),
                 Text(
                   'Selecciona un archivo de la lista izquierda para previsualizarlo e inspeccionar su claqueta.',
@@ -2408,20 +3521,146 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       );
     }
 
-    final originalName = clip.originalFilePath != null ? p.basename(clip.originalFilePath!) : '—';
+    final originalName = clip.originalFilePath != null
+        ? p.basename(clip.originalFilePath!)
+        : '—';
     final proposedName = _computeStudioProposedBanner(clip);
     final tcIn = clip.fileTcIn ?? '00:00:00:00';
     final tcOut = clip.fileTcOut ?? '00:00:00:00';
-    final hasVideo = clip.originalFilePath != null &&
+    final hasVideo =
+        clip.originalFilePath != null &&
         _isPlayableVideo(clip.originalFilePath) &&
         _studioVideoController != null;
 
-    final hasVisibleFlags = _project.showMos ||
+    final hasVisibleFlags =
+        _project.showMos ||
         _project.showTf ||
         _project.showDs ||
         _project.showFf ||
         _project.showGpr ||
         _project.showDr;
+
+    final detectedCamera = clip.originalFilePath != null
+        ? ClipMatcherService.extractCamera(
+            clip.originalFilePath!,
+            fallback: _project.activeCamera,
+          )
+        : _project.activeCamera;
+
+    final List<Widget> dynamicSlateFields = [];
+    for (final elem in _project.bitacoraElementOrder) {
+      if (elem == 'capitulo' && _project.showChapter) {
+        dynamicSlateFields.add(
+          Expanded(
+            flex: 2,
+            child: TextField(
+              key: const ValueKey('studio_slate_chapter_field'),
+              controller: _studioChapterController,
+              focusNode: _studioChapterFocusNode,
+              decoration: const InputDecoration(
+                labelText: 'Cap',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12),
+              onChanged: (_) => _onStudioSlateFieldChanged(),
+            ),
+          ),
+        );
+      } else if (elem == 'escena') {
+        dynamicSlateFields.add(
+          Expanded(
+            flex: 2,
+            child: TextField(
+              key: const ValueKey('studio_slate_scene_field'),
+              controller: _studioSceneController,
+              focusNode: _studioSceneFocusNode,
+              decoration: const InputDecoration(
+                labelText: 'Escena',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12),
+              onChanged: (_) => _onStudioSlateFieldChanged(),
+            ),
+          ),
+        );
+      } else if (elem == 'plano' && _project.showPlane) {
+        dynamicSlateFields.add(
+          Expanded(
+            flex: 2,
+            child: TextField(
+              key: const ValueKey('studio_slate_plane_field'),
+              controller: _studioPlaneController,
+              focusNode: _studioPlaneFocusNode,
+              decoration: const InputDecoration(
+                labelText: 'Plano',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12),
+              onChanged: (_) => _onStudioSlateFieldChanged(),
+            ),
+          ),
+        );
+      } else if (elem == 'toma') {
+        dynamicSlateFields.add(
+          Expanded(
+            flex: 2,
+            child: TextField(
+              key: const ValueKey('studio_slate_take_field'),
+              controller: _studioTakeController,
+              focusNode: _studioTakeFocusNode,
+              decoration: const InputDecoration(
+                labelText: 'Toma',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12),
+              onChanged: (_) => _onStudioSlateFieldChanged(),
+            ),
+          ),
+        );
+      }
+    }
+
+    dynamicSlateFields.add(
+      Expanded(
+        flex: 2,
+        child: TextField(
+          key: const ValueKey('studio_slate_reel_field'),
+          controller: _studioReelController,
+          focusNode: _studioReelFocusNode,
+          decoration: const InputDecoration(
+            labelText: 'Reel',
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 8,
+            ),
+            border: OutlineInputBorder(),
+          ),
+          style: const TextStyle(fontSize: 12),
+          onChanged: (_) => _onStudioSlateFieldChanged(),
+        ),
+      ),
+    );
 
     return Focus(
       focusNode: _studioInspectorFocusNode,
@@ -2437,468 +3676,608 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
         ),
         child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Proposal Name Banner (Top of center pane, above video player)
-            Container(
-              key: const ValueKey('studio_proposed_banner'),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.2)),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.drive_file_rename_outline, size: 16, color: theme.colorScheme.primary),
-                  const SizedBox(width: 6),
-                  const Text('Propuesta: ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                  Expanded(
-                    child: Text(
-                      proposedName,
-                      key: const ValueKey('studio_proposed_banner_text'),
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // 2. Video Player Area (Expanded to consume all remaining vertical space)
-            Expanded(
-              child: Container(
-                key: const ValueKey('studio_video_player_container'),
-                decoration: BoxDecoration(
-                  color: Colors.black,
-                  borderRadius: BorderRadius.circular(8),
+          padding: const EdgeInsets.all(12.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. Proposal Name Banner (Top of center pane, above video player)
+              Container(
+                key: const ValueKey('studio_proposed_banner'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
                 ),
-                clipBehavior: Clip.antiAlias,
-                child: Stack(
-                  fit: StackFit.expand,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Row(
                   children: [
-                    ClipRect(
-                      child: Listener(
-                        behavior: HitTestBehavior.opaque,
-                        onPointerSignal: (pointerSignal) {
-                          if (pointerSignal is PointerScrollEvent) {
-                            if (pointerSignal.scrollDelta.dy < 0) {
-                              _studioZoomIn(focalPoint: pointerSignal.localPosition);
-                            } else if (pointerSignal.scrollDelta.dy > 0) {
-                              _studioZoomOut(focalPoint: pointerSignal.localPosition);
-                            }
-                          }
-                        },
-                        child: GestureDetector(
-                          key: const ValueKey('studio_video_gesture_detector'),
-                          onTap: () => _studioWorkspaceFocusNode.requestFocus(),
-                          onDoubleTap: _resetStudioZoom,
-                          child: MouseRegion(
-                            cursor: _studioCurrentZoom > 1.05
-                                ? SystemMouseCursors.grab
-                                : SystemMouseCursors.basic,
-                            onHover: (event) {
-                              _studioHoveredPointerPosition = event.localPosition;
-                            },
-                            onExit: (_) {
-                              _studioHoveredPointerPosition = null;
-                            },
-                            child: InteractiveViewer(
-                              transformationController: _studioZoomController,
-                              minScale: 1.0,
-                              maxScale: 5.0,
-                              panEnabled: true,
-                              scaleEnabled: true,
-                              trackpadScrollCausesScale: true,
-                              boundaryMargin: const EdgeInsets.all(600),
-                              clipBehavior: Clip.none,
-                              child: Center(
-                                child: hasVideo
-                                    ? Video(
-                                        controller: _studioVideoController!,
-                                        controls: NoVideoControls,
-                                        fit: BoxFit.contain,
-                                      )
-                                    : Container(
-                                        color: Colors.black,
-                                        child: Center(
-                                          child: Column(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(Icons.movie_filter_rounded, size: 52, color: Colors.white38),
-                                              const SizedBox(height: 8),
-                                              Text(
-                                                originalName,
-                                                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                'Timecode: $tcIn → $tcOut',
-                                                style: const TextStyle(fontFamily: 'monospace', color: Colors.white54, fontSize: 11),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                              ),
-                            ),
-                          ),
-                        ),
+                    Icon(
+                      Icons.drive_file_rename_outline,
+                      size: 16,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Propuesta: ',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
                       ),
                     ),
-
-                    // Floating Magnifier HUD Overlay
-                    Positioned(
-                      top: 10,
-                      right: 10,
-                      child: Container(
-                        key: const ValueKey('studio_magnifier_hud'),
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.65),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: Colors.white24),
+                    Expanded(
+                      child: Text(
+                        proposedName,
+                        key: const ValueKey('studio_proposed_banner_text'),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              key: const ValueKey('studio_zoom_out_button'),
-                              icon: const Icon(Icons.zoom_out, size: 16, color: Colors.white),
-                              tooltip: 'Alejar',
-                              visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.all(4),
-                              constraints: const BoxConstraints(),
-                              onPressed: _studioCurrentZoom > 1.05 ? _studioZoomOut : null,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${(_studioCurrentZoom * 100).round()}%',
-                              key: const ValueKey('studio_zoom_text'),
-                              style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontWeight: FontWeight.bold,
-                                fontSize: 11,
-                                color: Colors.white,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            IconButton(
-                              key: const ValueKey('studio_zoom_in_button'),
-                              icon: const Icon(Icons.zoom_in, size: 16, color: Colors.white),
-                              tooltip: 'Acercar',
-                              visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.all(4),
-                              constraints: const BoxConstraints(),
-                              onPressed: _studioCurrentZoom < 4.95 ? _studioZoomIn : null,
-                            ),
-                            if (_studioCurrentZoom > 1.05) ...[
-                              Container(
-                                height: 16,
-                                width: 1,
-                                color: Colors.white24,
-                                margin: const EdgeInsets.symmetric(horizontal: 4),
-                              ),
-                              IconButton(
-                                key: const ValueKey('studio_zoom_reset_button'),
-                                icon: const Icon(Icons.restart_alt, size: 16, color: Colors.white),
-                                tooltip: 'Restablecer 100%',
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.all(4),
-                                constraints: const BoxConstraints(),
-                                onPressed: _resetStudioZoom,
-                              ),
-                            ],
-                          ],
-                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 6),
+              const SizedBox(height: 8),
 
-            // Dedicated Studio Transport Bar
-            Container(
-              key: const ValueKey('studio_transport_bar'),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: theme.brightness == Brightness.dark ? const Color(0xFF1E1E24) : const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: theme.dividerColor.withValues(alpha: 0.3)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Seek Scrubber Slider
-                  ValueListenableBuilder<Duration>(
-                    valueListenable: _studioDurationNotifier,
-                    builder: (context, duration, _) {
-                      return ValueListenableBuilder<Duration>(
-                        valueListenable: _studioPositionNotifier,
-                        builder: (context, position, _) {
-                          final durationMs = duration.inMilliseconds;
-                          final positionMs = position.inMilliseconds;
-                          final sliderValue = _studioIsDraggingSlider
-                              ? _studioDragSliderValue
-                              : (durationMs > 0 ? (positionMs / durationMs).clamp(0.0, 1.0) : 0.0);
-
-                          return SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 3,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
-                            ),
-                            child: Slider(
-                              key: const ValueKey('studio_scrubber_slider'),
-                              value: sliderValue,
-                              onChanged: (val) {
-                                setState(() {
-                                  _studioIsDraggingSlider = true;
-                                  _studioDragSliderValue = val;
-                                });
-                              },
-                              onChangeEnd: (val) {
-                                final targetMs = (val * durationMs).round();
-                                final targetDuration = Duration(milliseconds: targetMs);
-                                _studioPlayer?.seek(targetDuration);
-                                setState(() {
-                                  _studioIsDraggingSlider = false;
-                                  _studioPositionNotifier.value = targetDuration;
-                                });
-                              },
-                            ),
-                          );
-                        },
-                      );
-                    },
+              // 2. Video Player Area (Expanded to consume all remaining vertical space)
+              Expanded(
+                child: Container(
+                  key: const ValueKey('studio_video_player_container'),
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    runSpacing: 4,
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Play / Pause
-                          ValueListenableBuilder<bool>(
-                            valueListenable: _studioIsPlayingNotifier,
-                            builder: (context, isPlaying, _) {
-                              return IconButton(
-                                key: const ValueKey('studio_play_pause_button'),
-                                icon: Icon(
-                                  isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                                  size: 22,
-                                  color: theme.colorScheme.primary,
+                      ClipRect(
+                        child: Listener(
+                          behavior: HitTestBehavior.opaque,
+                          onPointerSignal: (pointerSignal) {
+                            if (pointerSignal is PointerScrollEvent) {
+                              if (pointerSignal.scrollDelta.dy < 0) {
+                                _studioZoomIn(
+                                  focalPoint: pointerSignal.localPosition,
+                                );
+                              } else if (pointerSignal.scrollDelta.dy > 0) {
+                                _studioZoomOut(
+                                  focalPoint: pointerSignal.localPosition,
+                                );
+                              }
+                            }
+                          },
+                          child: GestureDetector(
+                            key: const ValueKey(
+                              'studio_video_gesture_detector',
+                            ),
+                            onTap: () =>
+                                _studioWorkspaceFocusNode.requestFocus(),
+                            onDoubleTap: _resetStudioZoom,
+                            child: MouseRegion(
+                              cursor: _studioCurrentZoom > 1.05
+                                  ? SystemMouseCursors.grab
+                                  : SystemMouseCursors.basic,
+                              onHover: (event) {
+                                _studioHoveredPointerPosition =
+                                    event.localPosition;
+                              },
+                              onExit: (_) {
+                                _studioHoveredPointerPosition = null;
+                              },
+                              child: InteractiveViewer(
+                                transformationController: _studioZoomController,
+                                minScale: 1.0,
+                                maxScale: 5.0,
+                                panEnabled: true,
+                                scaleEnabled: true,
+                                trackpadScrollCausesScale: true,
+                                boundaryMargin: const EdgeInsets.all(600),
+                                clipBehavior: Clip.none,
+                                child: Center(
+                                  child: hasVideo
+                                      ? Video(
+                                          controller: _studioVideoController!,
+                                          controls: NoVideoControls,
+                                          fit: BoxFit.contain,
+                                        )
+                                      : Container(
+                                          color: Colors.black,
+                                          child: Center(
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  Icons.movie_filter_rounded,
+                                                  size: 52,
+                                                  color: Colors.white38,
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  originalName,
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 13,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  'Timecode: $tcIn → $tcOut',
+                                                  style: const TextStyle(
+                                                    fontFamily: 'monospace',
+                                                    color: Colors.white54,
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
                                 ),
-                                tooltip: isPlaying ? 'Pausar' : 'Reproducir',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () {
-                                  if (_studioPlayer != null) {
-                                    _studioPlayer!.playOrPause();
-                                  } else {
-                                    _studioIsPlayingNotifier.value = !_studioIsPlayingNotifier.value;
-                                  }
-                                },
-                              );
-                            },
+                              ),
+                            ),
                           ),
-                          const SizedBox(width: 6),
-                          // 5s jump back
-                          IconButton(
-                            key: const ValueKey('studio_replay_5_button'),
-                            icon: const Icon(Icons.replay_5, size: 18),
-                            tooltip: 'Retroceder 5s',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: () {
-                              final target = _studioPositionNotifier.value - const Duration(seconds: 5);
-                              final clamped = target < Duration.zero ? Duration.zero : target;
-                              _studioPlayer?.seek(clamped);
-                              _studioPositionNotifier.value = clamped;
-                            },
-                          ),
-                          const SizedBox(width: 4),
-                          // 5s jump forward
-                          IconButton(
-                            key: const ValueKey('studio_forward_5_button'),
-                            icon: const Icon(Icons.forward_5, size: 18),
-                            tooltip: 'Avanzar 5s',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: () {
-                              final max = _studioDurationNotifier.value;
-                              final target = _studioPositionNotifier.value + const Duration(seconds: 5);
-                              final clamped = max > Duration.zero && target > max ? max : target;
-                              _studioPlayer?.seek(clamped);
-                              _studioPositionNotifier.value = clamped;
-                            },
-                          ),
-                          const SizedBox(width: 6),
-                          // Elapsed / Duration text
-                          ValueListenableBuilder<Duration>(
-                            valueListenable: _studioDurationNotifier,
-                            builder: (context, duration, _) {
-                              return ValueListenableBuilder<Duration>(
-                                valueListenable: _studioPositionNotifier,
-                                builder: (context, position, _) {
-                                  return Text(
-                                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
-                                    key: const ValueKey('studio_duration_text'),
-                                    style: TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 10.5,
-                                      color: theme.hintColor,
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
-                        ],
+                        ),
                       ),
-                      const SizedBox(width: 8),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Live Running SMPTE Timecode Badge
-                          ValueListenableBuilder<Duration>(
-                            valueListenable: _studioPositionNotifier,
-                            builder: (context, position, _) {
-                              final liveSmpte = _computeLiveSmpte(position, clip.fileTcIn, _project.log.metadata.frameRate);
-                              return Container(
-                                key: const ValueKey('studio_live_smpte_badge'),
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primaryContainer.withValues(alpha: 0.5),
-                                  borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.3)),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.access_time_rounded, size: 11, color: theme.colorScheme.primary),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      'SMPTE: $liveSmpte',
-                                      style: TextStyle(
-                                        color: theme.colorScheme.primary,
-                                        fontFamily: 'monospace',
-                                        fontSize: 10.5,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+
+                      // Floating Magnifier HUD Overlay
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: Container(
+                          key: const ValueKey('studio_magnifier_hud'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
                           ),
-                          const SizedBox(width: 6),
-                          // Volume toggle & slider
-                          ValueListenableBuilder<bool>(
-                            valueListenable: _studioIsMutedNotifier,
-                            builder: (context, isMuted, _) {
-                              return ValueListenableBuilder<double>(
-                                valueListenable: _studioVolumeNotifier,
-                                builder: (context, volume, _) {
-                                  return Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        key: const ValueKey('studio_volume_button'),
-                                        icon: Icon(
-                                          isMuted || volume <= 0.0
-                                              ? Icons.volume_off
-                                              : (volume < 50 ? Icons.volume_down : Icons.volume_up),
-                                          size: 16,
-                                        ),
-                                        tooltip: isMuted ? 'Activar sonido' : 'Silenciar',
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        onPressed: () {
-                                          if (isMuted) {
-                                            final target = _studioPreMuteVolume > 0 ? _studioPreMuteVolume : 100.0;
-                                            _studioPlayer?.setVolume(target);
-                                            _studioVolumeNotifier.value = target;
-                                            _studioIsMutedNotifier.value = false;
-                                          } else {
-                                            _studioPreMuteVolume = volume;
-                                            _studioPlayer?.setVolume(0.0);
-                                            _studioVolumeNotifier.value = 0.0;
-                                            _studioIsMutedNotifier.value = true;
-                                          }
-                                        },
-                                      ),
-                                      SizedBox(
-                                        width: 48,
-                                        child: SliderTheme(
-                                          data: SliderTheme.of(context).copyWith(
-                                            trackHeight: 2,
-                                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 3),
-                                            overlayShape: const RoundSliderOverlayShape(overlayRadius: 6),
-                                          ),
-                                          child: Slider(
-                                            key: const ValueKey('studio_volume_slider'),
-                                            value: volume.clamp(0.0, 100.0),
-                                            min: 0.0,
-                                            max: 100.0,
-                                            onChanged: (val) {
-                                              _studioPlayer?.setVolume(val);
-                                              _studioVolumeNotifier.value = val;
-                                              _studioIsMutedNotifier.value = val <= 0.0;
-                                            },
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              );
-                            },
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.65),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white24),
                           ),
-                        ],
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                key: const ValueKey('studio_zoom_out_button'),
+                                icon: const Icon(
+                                  Icons.zoom_out,
+                                  size: 16,
+                                  color: Colors.white,
+                                ),
+                                tooltip: 'Alejar',
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.all(4),
+                                constraints: const BoxConstraints(),
+                                onPressed: _studioCurrentZoom > 1.05
+                                    ? _studioZoomOut
+                                    : null,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${(_studioCurrentZoom * 100).round()}%',
+                                key: const ValueKey('studio_zoom_text'),
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton(
+                                key: const ValueKey('studio_zoom_in_button'),
+                                icon: const Icon(
+                                  Icons.zoom_in,
+                                  size: 16,
+                                  color: Colors.white,
+                                ),
+                                tooltip: 'Acercar',
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.all(4),
+                                constraints: const BoxConstraints(),
+                                onPressed: _studioCurrentZoom < 4.95
+                                    ? _studioZoomIn
+                                    : null,
+                              ),
+                              if (_studioCurrentZoom > 1.05) ...[
+                                Container(
+                                  height: 16,
+                                  width: 1,
+                                  color: Colors.white24,
+                                  margin: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                  ),
+                                ),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'studio_zoom_reset_button',
+                                  ),
+                                  icon: const Icon(
+                                    Icons.restart_alt,
+                                    size: 16,
+                                    color: Colors.white,
+                                  ),
+                                  tooltip: 'Restablecer 100%',
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.all(4),
+                                  constraints: const BoxConstraints(),
+                                  onPressed: _resetStudioZoom,
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 6),
 
-            // 3. Editable Slate Card (Intrinsic height, not Expanded)
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                border: Border.all(color: theme.dividerColor.withValues(alpha: 0.3)),
-                borderRadius: BorderRadius.circular(8),
+              // Dedicated Studio Transport Bar
+              Container(
+                key: const ValueKey('studio_transport_bar'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: theme.brightness == Brightness.dark
+                      ? const Color(0xFF1E1E24)
+                      : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: theme.dividerColor.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Seek Scrubber Slider
+                    ValueListenableBuilder<Duration>(
+                      valueListenable: _studioDurationNotifier,
+                      builder: (context, duration, _) {
+                        return ValueListenableBuilder<Duration>(
+                          valueListenable: _studioPositionNotifier,
+                          builder: (context, position, _) {
+                            final durationMs = duration.inMilliseconds;
+                            final positionMs = position.inMilliseconds;
+                            final sliderValue = _studioIsDraggingSlider
+                                ? _studioDragSliderValue
+                                : (durationMs > 0
+                                      ? (positionMs / durationMs).clamp(
+                                          0.0,
+                                          1.0,
+                                        )
+                                      : 0.0);
+
+                            return SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 5,
+                                ),
+                                overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 10,
+                                ),
+                              ),
+                              child: Slider(
+                                key: const ValueKey('studio_scrubber_slider'),
+                                value: sliderValue,
+                                onChanged: (val) {
+                                  setState(() {
+                                    _studioIsDraggingSlider = true;
+                                    _studioDragSliderValue = val;
+                                  });
+                                },
+                                onChangeEnd: (val) {
+                                  final targetMs = (val * durationMs).round();
+                                  final targetDuration = Duration(
+                                    milliseconds: targetMs,
+                                  );
+                                  _studioPlayer?.seek(targetDuration);
+                                  setState(() {
+                                    _studioIsDraggingSlider = false;
+                                    _studioPositionNotifier.value =
+                                        targetDuration;
+                                  });
+                                },
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      runSpacing: 4,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Play / Pause
+                            ValueListenableBuilder<bool>(
+                              valueListenable: _studioIsPlayingNotifier,
+                              builder: (context, isPlaying, _) {
+                                return IconButton(
+                                  key: const ValueKey(
+                                    'studio_play_pause_button',
+                                  ),
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_fill,
+                                    size: 22,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                  tooltip: isPlaying ? 'Pausar' : 'Reproducir',
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () {
+                                    if (_studioPlayer != null) {
+                                      _studioPlayer!.playOrPause();
+                                    } else {
+                                      _studioIsPlayingNotifier.value =
+                                          !_studioIsPlayingNotifier.value;
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                            const SizedBox(width: 6),
+                            // 5s jump back
+                            IconButton(
+                              key: const ValueKey('studio_replay_5_button'),
+                              icon: const Icon(Icons.replay_5, size: 18),
+                              tooltip: 'Retroceder 5s',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: () {
+                                final target =
+                                    _studioPositionNotifier.value -
+                                    const Duration(seconds: 5);
+                                final clamped = target < Duration.zero
+                                    ? Duration.zero
+                                    : target;
+                                _studioPlayer?.seek(clamped);
+                                _studioPositionNotifier.value = clamped;
+                              },
+                            ),
+                            const SizedBox(width: 4),
+                            // 5s jump forward
+                            IconButton(
+                              key: const ValueKey('studio_forward_5_button'),
+                              icon: const Icon(Icons.forward_5, size: 18),
+                              tooltip: 'Avanzar 5s',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: () {
+                                final max = _studioDurationNotifier.value;
+                                final target =
+                                    _studioPositionNotifier.value +
+                                    const Duration(seconds: 5);
+                                final clamped =
+                                    max > Duration.zero && target > max
+                                    ? max
+                                    : target;
+                                _studioPlayer?.seek(clamped);
+                                _studioPositionNotifier.value = clamped;
+                              },
+                            ),
+                            const SizedBox(width: 6),
+                            // Elapsed / Duration text
+                            ValueListenableBuilder<Duration>(
+                              valueListenable: _studioDurationNotifier,
+                              builder: (context, duration, _) {
+                                return ValueListenableBuilder<Duration>(
+                                  valueListenable: _studioPositionNotifier,
+                                  builder: (context, position, _) {
+                                    return Text(
+                                      '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                                      key: const ValueKey(
+                                        'studio_duration_text',
+                                      ),
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 10.5,
+                                        color: theme.hintColor,
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 8),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Live Running SMPTE Timecode Badge
+                            ValueListenableBuilder<Duration>(
+                              valueListenable: _studioPositionNotifier,
+                              builder: (context, position, _) {
+                                final liveSmpte = _computeLiveSmpte(
+                                  position,
+                                  clip.fileTcIn,
+                                  _project.log.metadata.frameRate,
+                                );
+                                return Container(
+                                  key: const ValueKey(
+                                    'studio_live_smpte_badge',
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.primaryContainer
+                                        .withValues(alpha: 0.5),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: theme.colorScheme.primary
+                                          .withValues(alpha: 0.3),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.access_time_rounded,
+                                        size: 11,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        'SMPTE: $liveSmpte',
+                                        style: TextStyle(
+                                          color: theme.colorScheme.primary,
+                                          fontFamily: 'monospace',
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                            const SizedBox(width: 6),
+                            // Volume toggle & slider
+                            ValueListenableBuilder<bool>(
+                              valueListenable: _studioIsMutedNotifier,
+                              builder: (context, isMuted, _) {
+                                return ValueListenableBuilder<double>(
+                                  valueListenable: _studioVolumeNotifier,
+                                  builder: (context, volume, _) {
+                                    return Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          key: const ValueKey(
+                                            'studio_volume_button',
+                                          ),
+                                          icon: Icon(
+                                            isMuted || volume <= 0.0
+                                                ? Icons.volume_off
+                                                : (volume < 50
+                                                      ? Icons.volume_down
+                                                      : Icons.volume_up),
+                                            size: 16,
+                                          ),
+                                          tooltip: isMuted
+                                              ? 'Activar sonido'
+                                              : 'Silenciar',
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                          onPressed: () {
+                                            if (isMuted) {
+                                              final target =
+                                                  _studioPreMuteVolume > 0
+                                                  ? _studioPreMuteVolume
+                                                  : 100.0;
+                                              _studioPlayer?.setVolume(target);
+                                              _studioVolumeNotifier.value =
+                                                  target;
+                                              _studioIsMutedNotifier.value =
+                                                  false;
+                                            } else {
+                                              _studioPreMuteVolume = volume;
+                                              _studioPlayer?.setVolume(0.0);
+                                              _studioVolumeNotifier.value = 0.0;
+                                              _studioIsMutedNotifier.value =
+                                                  true;
+                                            }
+                                          },
+                                        ),
+                                        SizedBox(
+                                          width: 48,
+                                          child: SliderTheme(
+                                            data: SliderTheme.of(context).copyWith(
+                                              trackHeight: 2,
+                                              thumbShape:
+                                                  const RoundSliderThumbShape(
+                                                    enabledThumbRadius: 3,
+                                                  ),
+                                              overlayShape:
+                                                  const RoundSliderOverlayShape(
+                                                    overlayRadius: 6,
+                                                  ),
+                                            ),
+                                            child: Slider(
+                                              key: const ValueKey(
+                                                'studio_volume_slider',
+                                              ),
+                                              value: volume.clamp(0.0, 100.0),
+                                              min: 0.0,
+                                              max: 100.0,
+                                              onChanged: (val) {
+                                                _studioPlayer?.setVolume(val);
+                                                _studioVolumeNotifier.value =
+                                                    val;
+                                                _studioIsMutedNotifier.value =
+                                                    val <= 0.0;
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.movie_creation_outlined, size: 16, color: theme.colorScheme.primary),
-                      const SizedBox(width: 6),
-                      const Text(
-                        'Claqueta y Bitácora',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Container(
+              const SizedBox(height: 8),
+
+              // 3. Editable Slate Card (Intrinsic height, not Expanded)
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: theme.dividerColor.withValues(alpha: 0.3),
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, slateConstraints) {
+                        final showCompactHeader =
+                            slateConstraints.maxWidth < 850;
+
+                        final tcBadge = Container(
                           key: const ValueKey('studio_static_tc_badge'),
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
-                            color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
+                            color: theme.colorScheme.primaryContainer
+                                .withValues(alpha: 0.4),
                             borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.2)),
+                            border: Border.all(
+                              color: theme.colorScheme.primary.withValues(
+                                alpha: 0.2,
+                              ),
+                            ),
                           ),
                           child: Text(
                             'TC: $tcIn → $tcOut',
@@ -2910,166 +4289,324 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.save, size: 14),
-                        label: const Text('Guardar'),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          textStyle: const TextStyle(fontSize: 11),
-                          minimumSize: Size.zero,
-                        ),
-                        onPressed: _saveStudioSlate,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      if (_project.showChapter) ...[
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: _studioChapterController,
-                            focusNode: _studioChapterFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Cap',
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              border: OutlineInputBorder(),
+                        );
+
+                        final cameraBadge = Container(
+                          key: const ValueKey('studio_camera_badge'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.secondaryContainer
+                                .withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: theme.colorScheme.secondary
+                                  .withValues(alpha: 0.4),
                             ),
-                            style: const TextStyle(fontSize: 12),
-                            onChanged: (_) => setState(() {}),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      Expanded(
-                        flex: 2,
-                        child: TextField(
-                          controller: _studioSceneController,
-                          focusNode: _studioSceneFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Escena',
-                            isDense: true,
-                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                            border: OutlineInputBorder(),
-                          ),
-                          style: const TextStyle(fontSize: 12),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        flex: 2,
-                        child: TextField(
-                          controller: _studioTakeController,
-                          focusNode: _studioTakeFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Toma',
-                            isDense: true,
-                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                            border: OutlineInputBorder(),
-                          ),
-                          style: const TextStyle(fontSize: 12),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                      if (_project.showPlane) ...[
-                        const SizedBox(width: 6),
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: _studioPlaneController,
-                            focusNode: _studioPlaneFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Plano',
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              border: OutlineInputBorder(),
+                          child: Text(
+                            'Cámara $detectedCamera',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSecondaryContainer,
                             ),
-                            style: const TextStyle(fontSize: 12),
-                            onChanged: (_) => setState(() {}),
                           ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  if (hasVisibleFlags) ...[
+                        );
+
+                        final unlinkTakeButton = clip.associatedRecord != null
+                            ? OutlinedButton.icon(
+                                key: const ValueKey('studio_unlink_take_button'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.redAccent,
+                                  side: const BorderSide(
+                                    color: Colors.redAccent,
+                                    width: 1,
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 6,
+                                  ),
+                                  textStyle: const TextStyle(fontSize: 11),
+                                  minimumSize: Size.zero,
+                                ),
+                                icon: const Icon(Icons.link_off, size: 13),
+                                label: const Text('Desvincular'),
+                                onPressed: () =>
+                                    _unlinkStudioClip(clip, detectedCamera),
+                              )
+                            : null;
+
+                        final linkTakeButton = _project.log.records.isNotEmpty
+                            ? InkWell(
+                                key: const ValueKey('studio_link_take_button'),
+                                borderRadius: BorderRadius.circular(4),
+                                onTap: () =>
+                                    _openTakeLinkerDialog(clip, detectedCamera),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme
+                                        .colorScheme
+                                        .surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: theme.dividerColor
+                                          .withValues(alpha: 0.5),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.link,
+                                        size: 13,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        clip.associatedRecord != null
+                                            ? 'Cambiar Toma'
+                                            : 'Vincular Toma',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              )
+                            : null;
+
+                        final isSavingNow =
+                            _isStudioSaving || _isStudioPendingSave;
+                        final saveButton = ElevatedButton.icon(
+                          key: const ValueKey('studio_save_slate_button'),
+                          icon: isSavingNow
+                              ? SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.check_circle_outline,
+                                  size: 14,
+                                  color: Colors.green,
+                                ),
+                          label: Text(
+                            isSavingNow ? 'Guardando...' : 'Guardado',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isSavingNow ? null : Colors.green,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            textStyle: const TextStyle(fontSize: 11),
+                            minimumSize: Size.zero,
+                          ),
+                          onPressed: () => _saveStudioSlate(isAutoSave: false),
+                        );
+
+                        if (showCompactHeader) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.movie_creation_outlined,
+                                    size: 16,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const Text(
+                                    'Claqueta y Bitácora',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  cameraBadge,
+                                  const SizedBox(width: 6),
+                                  Expanded(child: tcBadge),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                alignment: WrapAlignment.end,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 6,
+                                runSpacing: 4,
+                                children: [
+                                  ?unlinkTakeButton,
+                                  ?linkTakeButton,
+                                  saveButton,
+                                ],
+                              ),
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          children: [
+                            Icon(
+                              Icons.movie_creation_outlined,
+                              size: 16,
+                              color: theme.colorScheme.primary,
+                            ),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Claqueta y Bitácora',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            cameraBadge,
+                            const SizedBox(width: 6),
+                            Flexible(child: tcBadge),
+                            const SizedBox(width: 8),
+                            const Spacer(),
+                            Wrap(
+                              alignment: WrapAlignment.end,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: [
+                                ?unlinkTakeButton,
+                                ?linkTakeButton,
+                                saveButton,
+                              ],
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                     const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: [
-                        if (_project.showMos)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_mos',
-                            label: 'MOS',
-                            selected: _studioIsMos,
-                            onSelected: (val) => setState(() => _studioIsMos = val),
-                          ),
-                        if (_project.showTf)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_tf',
-                            label: 'TF (Toma Falsa)',
-                            selected: _studioIsTf,
-                            onSelected: (val) => setState(() => _studioIsTf = val),
-                          ),
-                        if (_project.showDs)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_ds',
-                            label: 'DS (Driving Shot)',
-                            selected: _studioIsDs,
-                            onSelected: (val) => setState(() => _studioIsDs = val),
-                          ),
-                        if (_project.showFf)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_ff',
-                            label: 'FF (Free Fly)',
-                            selected: _studioIsFf,
-                            onSelected: (val) => setState(() => _studioIsFf = val),
-                          ),
-                        if (_project.showGpr)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_gpr',
-                            label: 'GPR (GoPro)',
-                            selected: _studioIsGpr,
-                            onSelected: (val) => setState(() => _studioIsGpr = val),
-                          ),
-                        if (_project.showDr)
-                          _buildStudioFlagChip(
-                            key: 'studio_flag_dr',
-                            label: 'DR (Drone)',
-                            selected: _studioIsDr,
-                            onSelected: (val) => setState(() => _studioIsDr = val),
-                          ),
-                      ],
+                    FocusTraversalGroup(
+                      policy: WidgetOrderTraversalPolicy(),
+                      child: Row(
+                        children: [
+                          for (int i = 0; i < dynamicSlateFields.length; i++) ...[
+                            if (i > 0) const SizedBox(width: 6),
+                            dynamicSlateFields[i],
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (hasVisibleFlags) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          if (_project.showMos)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_mos',
+                              label: 'MOS',
+                              selected: _studioIsMos,
+                              onSelected: (val) {
+                                setState(() => _studioIsMos = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                          if (_project.showTf)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_tf',
+                              label: 'TF (Toma Falsa)',
+                              selected: _studioIsTf,
+                              onSelected: (val) {
+                                setState(() => _studioIsTf = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                          if (_project.showDs)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_ds',
+                              label: 'DS (Driving Shot)',
+                              selected: _studioIsDs,
+                              onSelected: (val) {
+                                setState(() => _studioIsDs = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                          if (_project.showFf)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_ff',
+                              label: 'FF (Free Fly)',
+                              selected: _studioIsFf,
+                              onSelected: (val) {
+                                setState(() => _studioIsFf = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                          if (_project.showGpr)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_gpr',
+                              label: 'GPR (GoPro)',
+                              selected: _studioIsGpr,
+                              onSelected: (val) {
+                                setState(() => _studioIsGpr = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                          if (_project.showDr)
+                            _buildStudioFlagChip(
+                              key: 'studio_flag_dr',
+                              label: 'DR (Drone)',
+                              selected: _studioIsDr,
+                              onSelected: (val) {
+                                setState(() => _studioIsDr = val);
+                                _onStudioSlateFieldChanged();
+                              },
+                            ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const ValueKey('studio_slate_notes_field'),
+                      controller: _studioNotesController,
+                      focusNode: _studioNotesFocusNode,
+                      maxLines: 1,
+                      decoration: const InputDecoration(
+                        labelText: 'Observaciones / Notas',
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 8,
+                        ),
+                        border: OutlineInputBorder(),
+                      ),
+                      style: const TextStyle(fontSize: 12),
+                      onChanged: (_) => _onStudioSlateFieldChanged(),
                     ),
                   ],
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _studioNotesController,
-                    focusNode: _studioNotesFocusNode,
-                    maxLines: 1,
-                    decoration: const InputDecoration(
-                      labelText: 'Observaciones / Notas',
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      border: OutlineInputBorder(),
-                    ),
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildStudioFlagChip({
     required String key,
@@ -3079,7 +4616,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }) {
     return FilterChip(
       key: ValueKey(key),
-      label: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+      label: Text(
+        label,
+        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+      ),
       selected: selected,
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -3096,6 +4636,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         primary == _studioSceneFocusNode ||
         primary == _studioPlaneFocusNode ||
         primary == _studioTakeFocusNode ||
+        primary == _studioReelFocusNode ||
         primary == _studioNotesFocusNode) {
       return true;
     }
@@ -3131,8 +4672,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _studioPositionNotifier.value = target;
   }
 
-  List<RenameProposal> get _studioMediaClips =>
-      _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
+  List<RenameProposal> get _studioMediaClips {
+    final list = _report?.proposals.where((p) {
+      if (p.isCompanionFile) return false;
+      if (p.status == ProposalStatus.missingFile) return false;
+      if (p.originalFilePath == null) return false;
+      return File(p.originalFilePath!).existsSync() ||
+          p.originalFilePath!.startsWith('/media/');
+    }).toList() ?? [];
+    list.sort((a, b) {
+      final aNumStr = ClipMatcherService.extractClipNumber(
+        a.originalFilePath ?? a.proposedFileName,
+      );
+      final bNumStr = ClipMatcherService.extractClipNumber(
+        b.originalFilePath ?? b.proposedFileName,
+      );
+      final aNum = int.tryParse(aNumStr) ?? 999999;
+      final bNum = int.tryParse(bNumStr) ?? 999999;
+      final numComp = aNum.compareTo(bNum);
+      if (numComp != 0) return numComp;
+      return (a.originalFilePath ?? a.proposedFileName)
+          .compareTo(b.originalFilePath ?? b.proposedFileName);
+    });
+    return list;
+  }
 
   void _selectPreviousStudioClip() {
     final clips = _studioMediaClips;
@@ -3189,12 +4752,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
-  KeyEventResult _handleStudioWorkspaceKeyEvent(FocusNode node, KeyEvent event) {
+  KeyEventResult _handleStudioWorkspaceKeyEvent(
+    FocusNode node,
+    KeyEvent event,
+  ) {
     final isDown = event is KeyDownEvent;
     final isRepeat = event is KeyRepeatEvent;
     final isAction = isDown || isRepeat;
 
-    final isCtrlOrMeta = HardwareKeyboard.instance.isControlPressed ||
+    final isCtrlOrMeta =
+        HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
 
     // Global Navigation Shortcuts (functional from any state)
@@ -3276,9 +4843,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           final conventionWidget = _buildConventionEditorPane(
             width: conventionWidth,
           );
-          final centerWidget = Expanded(
-            child: _buildStudioCenterInspector(),
-          );
+          final centerWidget = Expanded(child: _buildStudioCenterInspector());
 
           return Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3305,12 +4870,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _undoRename() async {
     if (_mediaFolderPath == null) return;
-    
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('¿Deshacer último renombrado?'),
-        content: const Text('Se restaurarán los nombres originales de los archivos procesados en este lote.'),
+        content: const Text(
+          'Se restaurarán los nombres originales de los archivos procesados en este lote.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -3377,8 +4944,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    String projectTitle = _projectPath != null 
-        ? _projectPath!.split(Platform.pathSeparator).last 
+    String projectTitle = _projectPath != null
+        ? _projectPath!.split(Platform.pathSeparator).last
         : 'Proyecto Sin Título';
     if (_isDirty) projectTitle += ' *';
 
@@ -3410,10 +4977,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               builder: (context, currentMode, child) {
                 final isCurrentDark = currentMode == ThemeMode.dark;
                 return IconButton(
-                  icon: Icon(isCurrentDark ? Icons.light_mode : Icons.dark_mode),
+                  icon: Icon(
+                    isCurrentDark ? Icons.light_mode : Icons.dark_mode,
+                  ),
                   tooltip: 'Cambiar modo oscuro / claro',
                   onPressed: () async {
-                    final newMode = isCurrentDark ? ThemeMode.light : ThemeMode.dark;
+                    final newMode = isCurrentDark
+                        ? ThemeMode.light
+                        : ThemeMode.dark;
                     themeNotifier.value = newMode;
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setBool('is_dark_mode', !isCurrentDark);
@@ -3459,7 +5030,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             controller: _tabController,
             indicatorColor: const Color(0xFF6366F1),
             labelColor: isDark ? Colors.white : const Color(0xFF4F46E5),
-            unselectedLabelColor: isDark ? const Color(0xFF8E8E9F) : const Color(0xFF64748B),
+            unselectedLabelColor: isDark
+                ? const Color(0xFF8E8E9F)
+                : const Color(0xFF64748B),
             onTap: (index) {
               if (index == 0) {
                 _disposeStudioPlayer();
@@ -3477,7 +5050,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               if (_isTextFieldFocused) {
                 final primary = FocusManager.instance.primaryFocus;
                 if (primary?.context != null) {
-                  Actions.maybeInvoke(primary!.context!, const UndoTextIntent(SelectionChangedCause.keyboard));
+                  Actions.maybeInvoke(
+                    primary!.context!,
+                    const UndoTextIntent(SelectionChangedCause.keyboard),
+                  );
                 }
                 return;
               }
@@ -3489,7 +5065,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               if (_isTextFieldFocused) {
                 final primary = FocusManager.instance.primaryFocus;
                 if (primary?.context != null) {
-                  Actions.maybeInvoke(primary!.context!, const UndoTextIntent(SelectionChangedCause.keyboard));
+                  Actions.maybeInvoke(
+                    primary!.context!,
+                    const UndoTextIntent(SelectionChangedCause.keyboard),
+                  );
                 }
                 return;
               }
@@ -3541,21 +5120,36 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                     child: _isStudioMode
                                         ? _buildStudioWorkspace()
                                         : (_showConventionEditorPane
-                                            ? Row(
-                                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                                children: _appSettings.renamerPaneLayout == 'media_right'
-                                                    ? [
-                                                        _buildConventionEditorPane(),
-                                                        const SizedBox(width: 16),
-                                                        Expanded(child: _buildPreviewTable()),
-                                                      ]
-                                                    : [
-                                                        Expanded(child: _buildPreviewTable()),
-                                                        const SizedBox(width: 16),
-                                                        _buildConventionEditorPane(),
-                                                      ],
-                                              )
-                                            : _buildPreviewTable()),
+                                              ? Row(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment
+                                                          .stretch,
+                                                  children:
+                                                      _appSettings
+                                                              .renamerPaneLayout ==
+                                                          'media_right'
+                                                      ? [
+                                                          _buildConventionEditorPane(),
+                                                          const SizedBox(
+                                                            width: 16,
+                                                          ),
+                                                          Expanded(
+                                                            child:
+                                                                _buildPreviewTable(),
+                                                          ),
+                                                        ]
+                                                      : [
+                                                          Expanded(
+                                                            child:
+                                                                _buildPreviewTable(),
+                                                          ),
+                                                          const SizedBox(
+                                                            width: 16,
+                                                          ),
+                                                          _buildConventionEditorPane(),
+                                                        ],
+                                                )
+                                              : _buildPreviewTable()),
                                   ),
                                   const SizedBox(height: 16),
                                   _buildFooter(),
@@ -3578,8 +5172,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildControlsBar() {
-    final playablePlaylist = _report?.proposals
-            .where((p) => p.originalFilePath != null && _isPlayableVideo(p.originalFilePath))
+    final playablePlaylist =
+        _report?.proposals
+            .where(
+              (p) =>
+                  p.originalFilePath != null &&
+                  _isPlayableVideo(p.originalFilePath),
+            )
             .toList() ??
         [];
 
@@ -3598,29 +5197,61 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               label: const Text('Importar Excel'),
             ),
             DropdownButton<String>(
-              value: _project.cameraNames.contains(_project.activeCamera) 
-                  ? _project.activeCamera 
-                  : (_project.cameraNames.isNotEmpty ? _project.cameraNames.first : null),
-              items: _project.cameraNames.isEmpty 
-                  ? [const DropdownMenuItem(value: 'A', child: Text('Cámara A'))]
-                  : _project.cameraNames.map((cam) => DropdownMenuItem(value: cam, child: Text('Cámara $cam'))).toList(),
+              key: const ValueKey('camera_selector_dropdown'),
+              value: _project.activeCamera.toUpperCase() == 'ALL'
+                  ? 'ALL'
+                  : (_project.cameraNames.contains(_project.activeCamera)
+                      ? _project.activeCamera
+                      : (_project.cameraNames.isNotEmpty
+                            ? _project.cameraNames.first
+                            : null)),
+              items: [
+                const DropdownMenuItem(
+                  value: 'ALL',
+                  child: Text('Todas las Cámaras'),
+                ),
+                ...(_project.cameraNames.isEmpty
+                    ? [
+                        const DropdownMenuItem(
+                          value: 'A',
+                          child: Text('Cámara A'),
+                        ),
+                      ]
+                    : _project.cameraNames.map(
+                        (cam) => DropdownMenuItem(
+                          value: cam,
+                          child: Text('Cámara $cam'),
+                        ),
+                      )),
+              ],
               onChanged: (val) {
                 if (val != null) {
                   setState(() {
                     String oldCamera = _project.activeCamera;
                     _project = _project.copyWith(activeCamera: val);
-                    
-                    if (_reelController.text.isEmpty) {
-                      _reelController.text = _computeDefaultReel(_project.activeCamera);
-                    } else {
-                      String currentText = _reelController.text.trim();
-                      final letterMatch = RegExp(r'^([A-Za-z])(\d+.*)$').firstMatch(currentText);
-                      final numericMatch = RegExp(r'^(\d+.*)$').firstMatch(currentText);
-                      
-                      if (letterMatch != null && letterMatch.group(1)!.toUpperCase() == oldCamera) {
-                        _reelController.text = '${_project.activeCamera}${letterMatch.group(2)}';
-                      } else if (numericMatch != null) {
-                        _reelController.text = '${_project.activeCamera}$currentText';
+
+                    if (val != 'ALL') {
+                      if (_reelController.text.isEmpty) {
+                        _reelController.text = _computeDefaultReel(
+                          _project.activeCamera,
+                        );
+                      } else {
+                        String currentText = _reelController.text.trim();
+                        final letterMatch = RegExp(
+                          r'^([A-Za-z])(\d+.*)$',
+                        ).firstMatch(currentText);
+                        final numericMatch = RegExp(
+                          r'^(\d+.*)$',
+                        ).firstMatch(currentText);
+
+                        if (letterMatch != null &&
+                            letterMatch.group(1)!.toUpperCase() == oldCamera) {
+                          _reelController.text =
+                              '${_project.activeCamera}${letterMatch.group(2)}';
+                        } else if (numericMatch != null) {
+                          _reelController.text =
+                              '${_project.activeCamera}$currentText';
+                        }
                       }
                     }
                   });
@@ -3636,7 +5267,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   labelText: 'Reel activo',
                   hintText: _computeDefaultReel(_project.activeCamera),
                   border: const OutlineInputBorder(),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   isDense: true,
                 ),
                 onChanged: (val) {
@@ -3650,21 +5284,24 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               label: const Text('Selector de Carpeta de Medios'),
             ),
             Tooltip(
-              message: 'Alternar entre vista de tabla y modo estudio de 3 paneles',
+              message:
+                  'Alternar entre vista de tabla y modo estudio de 3 paneles',
               child: OutlinedButton.icon(
                 icon: Icon(
                   _isStudioMode
                       ? Icons.dashboard_customize_rounded
                       : Icons.video_settings_rounded,
                 ),
-                label: Text(
-                  _isStudioMode ? 'Vista Tabla' : 'Modo Estudio',
-                ),
+                label: Text(_isStudioMode ? 'Vista Tabla' : 'Modo Estudio'),
                 onPressed: () {
                   setState(() {
                     _isStudioMode = !_isStudioMode;
                     if (_isStudioMode && _selectedStudioClip == null) {
-                      final clips = _report?.proposals.where((p) => !p.isCompanionFile).toList() ?? [];
+                      final clips =
+                          _report?.proposals
+                              .where((p) => !p.isCompanionFile)
+                              .toList() ??
+                          [];
                       if (clips.isNotEmpty) {
                         _selectStudioClip(clips.first);
                       }
@@ -3674,7 +5311,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
             ),
             Tooltip(
-              message: 'Mostrar/ocultar el panel de edición y pegado de convención',
+              message:
+                  'Mostrar/ocultar el panel de edición y pegado de convención',
               child: OutlinedButton.icon(
                 icon: Icon(
                   _showConventionEditorPane
@@ -3682,7 +5320,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       : Icons.view_sidebar_outlined,
                 ),
                 label: Text(
-                  _showConventionEditorPane ? 'Ocultar Editor' : 'Editor de Texto',
+                  _showConventionEditorPane
+                      ? 'Ocultar Editor'
+                      : 'Editor de Texto',
                 ),
                 onPressed: () {
                   setState(() {
@@ -3699,10 +5339,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
             if (_mediaFolderPath != null)
               Chip(
-                avatar: const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                avatar: const Icon(
+                  Icons.check_circle,
+                  size: 16,
+                  color: Colors.green,
+                ),
                 label: Text(
                   _mediaFolderPath!.split(Platform.pathSeparator).last,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
                 ),
                 deleteIcon: const Icon(Icons.close, size: 14),
                 onDeleted: () {
@@ -3743,21 +5390,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       child: Material(
         elevation: 4,
         borderRadius: BorderRadius.circular(8),
-        color: _isNotificationError ? Colors.red.shade100 : Colors.green.shade100,
+        color: _isNotificationError
+            ? Colors.red.shade100
+            : Colors.green.shade100,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
               Icon(
-                _isNotificationError ? Icons.error_outline : Icons.check_circle_outline,
-                color: _isNotificationError ? Colors.red.shade900 : Colors.green.shade900,
+                _isNotificationError
+                    ? Icons.error_outline
+                    : Icons.check_circle_outline,
+                color: _isNotificationError
+                    ? Colors.red.shade900
+                    : Colors.green.shade900,
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   _notificationMessage!,
                   style: TextStyle(
-                    color: _isNotificationError ? Colors.red.shade900 : Colors.green.shade900,
+                    color: _isNotificationError
+                        ? Colors.red.shade900
+                        : Colors.green.shade900,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -3765,7 +5420,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               IconButton(
                 icon: const Icon(Icons.close),
                 onPressed: _clearNotification,
-                color: _isNotificationError ? Colors.red.shade900 : Colors.green.shade900,
+                color: _isNotificationError
+                    ? Colors.red.shade900
+                    : Colors.green.shade900,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
               ),
@@ -3787,16 +5444,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.folder_open, size: 52, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.7)),
+              Icon(
+                Icons.folder_open,
+                size: 52,
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.7),
+              ),
               const SizedBox(height: 12),
               Text(
                 'Bitácora activa con ${_project.log.records.length} tomas registradas',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
               ),
               const SizedBox(height: 6),
               Text(
                 'Haz clic en "Selector de Carpeta de Medios" para conciliar los clips con la Cámara ${_project.activeCamera}.',
-                style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+                style: TextStyle(
+                  color: Theme.of(context).hintColor,
+                  fontSize: 13,
+                ),
               ),
             ],
           ),
@@ -3806,7 +5475,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.video_library_outlined, size: 52, color: Theme.of(context).hintColor.withValues(alpha: 0.5)),
+            Icon(
+              Icons.video_library_outlined,
+              size: 52,
+              color: Theme.of(context).hintColor.withValues(alpha: 0.5),
+            ),
             const SizedBox(height: 12),
             const Text(
               'Bienvenido al Renombrador de Medios',
@@ -3815,20 +5488,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             const SizedBox(height: 6),
             Text(
               'Puedes seleccionar una Carpeta de Medios o Importar un Excel para comenzar.',
-              style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+              style: TextStyle(
+                color: Theme.of(context).hintColor,
+                fontSize: 13,
+              ),
             ),
           ],
         ),
       );
     }
 
-    final mediaClips = _report!.proposals.where((p) => !p.isCompanionFile).toList();
+    final mediaClips = _report!.proposals
+        .where((p) => !p.isCompanionFile)
+        .toList();
     if (mediaClips.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.find_in_page_outlined, size: 48, color: Theme.of(context).hintColor),
+            Icon(
+              Icons.find_in_page_outlined,
+              size: 48,
+              color: Theme.of(context).hintColor,
+            ),
             const SizedBox(height: 12),
             Text(
               'No se detectaron archivos de video para la Cámara ${_project.activeCamera} en esta carpeta.',
@@ -3837,7 +5519,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             const SizedBox(height: 6),
             Text(
               'Verifica que la carpeta contenga clips con el prefijo "${_project.activeCamera}" o selecciona otra carpeta.',
-              style: TextStyle(color: Theme.of(context).hintColor, fontSize: 13),
+              style: TextStyle(
+                color: Theme.of(context).hintColor,
+                fontSize: 13,
+              ),
             ),
           ],
         ),
@@ -3850,22 +5535,31 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       reelCounts[reel] = (reelCounts[reel] ?? 0) + 1;
     }
 
-    if (_selectedReelFilter != null && !reelCounts.containsKey(_selectedReelFilter)) {
+    if (_selectedReelFilter != null &&
+        !reelCounts.containsKey(_selectedReelFilter)) {
       _selectedReelFilter = null;
     }
 
     List<RenameProposal> displayProposals = _report!.proposals;
     if (!_renameMetadata) {
-      displayProposals = displayProposals.where((p) => !p.isCompanionFile).toList();
+      displayProposals = displayProposals
+          .where((p) => !p.isCompanionFile)
+          .toList();
     }
 
     if (_selectedReelFilter != null) {
-      displayProposals = displayProposals.where((p) => _getProposalReel(p) == _selectedReelFilter).toList();
+      displayProposals = displayProposals
+          .where((p) => _getProposalReel(p) == _selectedReelFilter)
+          .toList();
     }
 
     if (_filterOnlyConventionMatches) {
       displayProposals = displayProposals
-          .where((p) => p.originalFilePath != null && _livePastedOverrides.containsKey(p.originalFilePath))
+          .where(
+            (p) =>
+                p.originalFilePath != null &&
+                _livePastedOverrides.containsKey(p.originalFilePath),
+          )
           .toList();
     }
 
@@ -3919,10 +5613,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ],
                   if (hasMatchChip)
                     FilterChip(
-                      avatar: const Icon(Icons.check, size: 14, color: Colors.green),
-                      label: Text('Solo coincidentes (${_livePastedOverrides.length})'),
+                      avatar: const Icon(
+                        Icons.check,
+                        size: 14,
+                        color: Colors.green,
+                      ),
+                      label: Text(
+                        'Solo coincidentes (${_livePastedOverrides.length})',
+                      ),
                       selected: _filterOnlyConventionMatches,
-                      onSelected: (sel) => setState(() => _filterOnlyConventionMatches = sel),
+                      onSelected: (sel) =>
+                          setState(() => _filterOnlyConventionMatches = sel),
                     ),
                 ],
               ),
@@ -3935,17 +5636,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             decoration: BoxDecoration(
               color: Colors.amber.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.amber.shade700.withValues(alpha: 0.4)),
+              border: Border.all(
+                color: Colors.amber.shade700.withValues(alpha: 0.4),
+              ),
             ),
             child: Row(
               children: [
-                Icon(Icons.info_outline, color: Colors.amber.shade800, size: 20),
+                Icon(
+                  Icons.info_outline,
+                  color: Colors.amber.shade800,
+                  size: 20,
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'Se detectaron ${displayProposals.length} archivos en la carpeta de medios. La bitácora aún no tiene tomas registradas; importa un Excel o usa la pestaña "Bitácora Digital" para asignar nombres propuestos.',
                     style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.dark ? Colors.amber.shade200 : Colors.amber.shade900,
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.amber.shade200
+                          : Colors.amber.shade900,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
@@ -3967,55 +5676,81 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   scrollDirection: Axis.horizontal,
                   child: Builder(
                     builder: (context) {
-                      final isMediaRight = _appSettings.renamerPaneLayout == 'media_right';
+                      final isMediaRight =
+                          _appSettings.renamerPaneLayout == 'media_right';
 
                       return DataTable(
                         columnSpacing: 24,
-                        headingTextStyle: const TextStyle(fontWeight: FontWeight.bold),
+                        headingTextStyle: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
                         columns: isMediaRight
                             ? const [
                                 DataColumn(label: Text('Nombre Propuesto')),
                                 DataColumn(label: Text('Escena / Toma')),
                                 DataColumn(label: Text('Archivo Original')),
-                                DataColumn(label: Text('TC Archivo (In → Out)')),
+                                DataColumn(
+                                  label: Text('TC Archivo (In → Out)'),
+                                ),
                                 DataColumn(label: Text('Estado')),
                               ]
                             : const [
                                 DataColumn(label: Text('Archivo Original')),
-                                DataColumn(label: Text('TC Archivo (In → Out)')),
+                                DataColumn(
+                                  label: Text('TC Archivo (In → Out)'),
+                                ),
                                 DataColumn(label: Text('Nombre Propuesto')),
                                 DataColumn(label: Text('Escena / Toma')),
                                 DataColumn(label: Text('Estado')),
                               ],
                         rows: displayProposals.map((proposal) {
-                          String original = proposal.originalFilePath != null ? p.basename(proposal.originalFilePath!) : '—';
+                          String original = proposal.originalFilePath != null
+                              ? p.basename(proposal.originalFilePath!)
+                              : '—';
                           String proposed = proposal.proposedFileName;
-                          if (proposal.originalFilePath != null && _livePastedOverrides.containsKey(proposal.originalFilePath)) {
-                            final liveName = _livePastedOverrides[proposal.originalFilePath]!;
-                            final origExt = p.extension(proposal.originalFilePath!);
-                            if (p.extension(liveName).isEmpty && origExt.isNotEmpty) {
+                          if (proposal.originalFilePath != null &&
+                              _livePastedOverrides.containsKey(
+                                proposal.originalFilePath,
+                              )) {
+                            final liveName =
+                                _livePastedOverrides[proposal
+                                    .originalFilePath]!;
+                            final origExt = p.extension(
+                              proposal.originalFilePath!,
+                            );
+                            if (p.extension(liveName).isEmpty &&
+                                origExt.isNotEmpty) {
                               proposed = '$liveName$origExt';
                             } else {
                               proposed = liveName;
                             }
-                          } else if (proposal.status == ProposalStatus.unmatchedClip) {
+                          } else if (proposal.status ==
+                              ProposalStatus.unmatchedClip) {
                             proposed = '—';
                           }
 
                           String sceneTake = '—';
                           if (proposal.associatedRecord != null) {
                             String takeStr = proposal.associatedRecord!.take;
-                            String displayTake = takeStr.toUpperCase().startsWith('T') ? takeStr : 'T$takeStr';
-                            sceneTake = 'Esc. ${proposal.associatedRecord!.scene} - $displayTake';
+                            String displayTake =
+                                takeStr.toUpperCase().startsWith('T')
+                                ? takeStr
+                                : 'T$takeStr';
+                            sceneTake =
+                                'Esc. ${proposal.associatedRecord!.scene} - $displayTake';
                           }
 
                           final logTc = proposal.associatedRecord?.tcIn;
                           final fileTc = proposal.fileTcIn;
-                          final hasLogTc = logTc != null && logTc.trim().isNotEmpty;
-                          final hasFileTc = fileTc != null && fileTc.trim().isNotEmpty;
+                          final hasLogTc =
+                              logTc != null && logTc.trim().isNotEmpty;
+                          final hasFileTc =
+                              fileTc != null && fileTc.trim().isNotEmpty;
                           final isMatched = proposal.isTimecodeMatched;
 
-                          final isPlayable = _isPlayableVideo(proposal.originalFilePath);
+                          final isPlayable = _isPlayableVideo(
+                            proposal.originalFilePath,
+                          );
 
                           // Archivo Original cell
                           final cellOriginal = DataCell(
@@ -4027,13 +5762,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                     borderRadius: BorderRadius.circular(12),
                                     onTap: () => _openMediaPreview(proposal),
                                     child: Tooltip(
-                                      message: 'Reproducir e inspeccionar video',
+                                      message:
+                                          'Reproducir e inspeccionar video',
                                       child: Padding(
-                                        padding: const EdgeInsets.only(right: 6.0),
+                                        padding: const EdgeInsets.only(
+                                          right: 6.0,
+                                        ),
                                         child: Icon(
                                           Icons.play_circle_outline,
                                           size: 16,
-                                          color: Theme.of(context).colorScheme.primary,
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.primary,
                                         ),
                                       ),
                                     ),
@@ -4042,41 +5782,61 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 Text(original),
                               ],
                             ),
-                            onDoubleTap: isPlayable ? () => _openMediaPreview(proposal) : null,
+                            onDoubleTap: isPlayable
+                                ? () => _openMediaPreview(proposal)
+                                : null,
                           );
 
                           // TC Archivo cell
                           final cellTc = DataCell(
                             proposal.fileTcIn != null
                                 ? Text(
-                                    proposal.fileTcOut != null 
+                                    proposal.fileTcOut != null
                                         ? '${proposal.fileTcIn} → ${proposal.fileTcOut}'
                                         : proposal.fileTcIn!,
                                     style: TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 11,
-                                      color: Theme.of(context).colorScheme.primary,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   )
-                                : Text('—', style: TextStyle(color: Theme.of(context).hintColor)),
+                                : Text(
+                                    '—',
+                                    style: TextStyle(
+                                      color: Theme.of(context).hintColor,
+                                    ),
+                                  ),
                           );
 
                           // Nombre Propuesto cell
-                          final isLiveMatched = proposal.originalFilePath != null &&
-                              _livePastedOverrides.containsKey(proposal.originalFilePath) &&
-                              !_duplicateClipConflicts.containsKey(proposal.originalFilePath);
+                          final isLiveMatched =
+                              proposal.originalFilePath != null &&
+                              _livePastedOverrides.containsKey(
+                                proposal.originalFilePath,
+                              ) &&
+                              !_duplicateClipConflicts.containsKey(
+                                proposal.originalFilePath,
+                              );
 
                           final cellProposed = DataCell(
                             isLiveMatched
                                 ? Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.check_circle_outline, size: 14, color: Colors.green),
+                                      const Icon(
+                                        Icons.check_circle_outline,
+                                        size: 14,
+                                        color: Colors.green,
+                                      ),
                                       const SizedBox(width: 6),
                                       Text(
                                         proposed,
-                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
                                       ),
                                     ],
                                   )
@@ -4092,22 +5852,36 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 if (proposal.hasReelDiscrepancy) ...[
                                   const SizedBox(width: 8),
                                   Tooltip(
-                                    message: 'El reel del archivo (${proposal.fileReel ?? "—"}) no coincide con el registrado en bitácora (${proposal.associatedRecord?.reel ?? "—"})',
+                                    message:
+                                        'El reel del archivo (${proposal.fileReel ?? "—"}) no coincide con el registrado en bitácora (${proposal.associatedRecord?.reel ?? "—"})',
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: Colors.amber.withValues(alpha: 0.15),
+                                        color: Colors.amber.withValues(
+                                          alpha: 0.15,
+                                        ),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(color: Colors.amber),
                                       ),
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber),
+                                          const Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 12,
+                                            color: Colors.amber,
+                                          ),
                                           const SizedBox(width: 4),
                                           Text(
                                             'Reel: ${proposal.associatedRecord?.reel ?? '—'} ≠ ${proposal.fileReel}',
-                                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.amber,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -4117,45 +5891,77 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 if (isMatched) ...[
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
                                     decoration: BoxDecoration(
-                                      color: Colors.green.withValues(alpha: 0.15),
+                                      color: Colors.green.withValues(
+                                        alpha: 0.15,
+                                      ),
                                       borderRadius: BorderRadius.circular(4),
                                       border: Border.all(color: Colors.green),
                                     ),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                                        const Icon(
+                                          Icons.check_circle,
+                                          size: 12,
+                                          color: Colors.green,
+                                        ),
                                         const SizedBox(width: 4),
                                         Text(
-                                          proposal.timecodeDeltaSeconds != null && proposal.timecodeDeltaSeconds! > 0
+                                          proposal.timecodeDeltaSeconds !=
+                                                      null &&
+                                                  proposal.timecodeDeltaSeconds! >
+                                                      0
                                               ? 'TC Coincide (±${proposal.timecodeDeltaSeconds}s)'
                                               : 'TC Coincide',
-                                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green),
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.green,
+                                          ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                ] else if (hasLogTc && hasFileTc && !isMatched) ...[
+                                ] else if (hasLogTc &&
+                                    hasFileTc &&
+                                    !isMatched) ...[
                                   const SizedBox(width: 8),
                                   Tooltip(
-                                    message: 'El timecode del archivo ($fileTc) no coincide con el registrado en bitácora ($logTc)',
+                                    message:
+                                        'El timecode del archivo ($fileTc) no coincide con el registrado en bitácora ($logTc)',
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: Colors.amber.withValues(alpha: 0.15),
+                                        color: Colors.amber.withValues(
+                                          alpha: 0.15,
+                                        ),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(color: Colors.amber),
                                       ),
                                       child: const Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber),
+                                          Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 12,
+                                            color: Colors.amber,
+                                          ),
                                           SizedBox(width: 4),
                                           Text(
                                             'TC Diferente',
-                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.amber,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -4167,42 +5973,65 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           );
 
                           // Estado cell
-                          final hasDuplicateConflict = proposal.originalFilePath != null &&
-                              _duplicateClipConflicts.containsKey(proposal.originalFilePath);
-                          final hasStandardConflict = proposal.status == ProposalStatus.conflict;
+                          final hasDuplicateConflict =
+                              proposal.originalFilePath != null &&
+                              _duplicateClipConflicts.containsKey(
+                                proposal.originalFilePath,
+                              );
+                          final hasStandardConflict =
+                              proposal.status == ProposalStatus.conflict;
 
                           final cellStatus = DataCell(
                             hasDuplicateConflict || hasStandardConflict
                                 ? Tooltip(
-                                    message: 'Haz clic para resolver este conflicto',
+                                    message:
+                                        'Haz clic para resolver este conflicto',
                                     child: InkWell(
                                       onTap: _openConflictResolver,
                                       borderRadius: BorderRadius.circular(12),
                                       child: _buildStatusBadge(
                                         ProposalStatus.conflict,
                                         conflictReason: hasDuplicateConflict
-                                            ? _duplicateClipConflicts[proposal.originalFilePath]
+                                            ? _duplicateClipConflicts[proposal
+                                                  .originalFilePath]
                                             : null,
                                       ),
                                     ),
                                   )
-                                    : isLiveMatched
-                                        ? _buildStatusBadge(
-                                            ProposalStatus.ready,
-                                            customText: _livePastedLineNumbers[proposal.originalFilePath] != null
-                                                ? '✓ Texto (Línea ${_livePastedLineNumbers[proposal.originalFilePath]})'
-                                                : '✓ Coincide con texto',
-                                          )
-                                        : _buildStatusBadge(proposal.status),
+                                : isLiveMatched
+                                ? _buildStatusBadge(
+                                    ProposalStatus.ready,
+                                    customText:
+                                        _livePastedLineNumbers[proposal
+                                                .originalFilePath] !=
+                                            null
+                                        ? '✓ Texto (Línea ${_livePastedLineNumbers[proposal.originalFilePath]})'
+                                        : '✓ Coincide con texto',
+                                  )
+                                : _buildStatusBadge(proposal.status),
                           );
 
                           return DataRow(
                             color: WidgetStateProperty.resolveWith<Color?>(
-                              (states) => isLiveMatched ? Colors.green.withValues(alpha: 0.12) : null,
+                              (states) => isLiveMatched
+                                  ? Colors.green.withValues(alpha: 0.12)
+                                  : null,
                             ),
                             cells: isMediaRight
-                                ? [cellProposed, cellSceneTake, cellOriginal, cellTc, cellStatus]
-                                : [cellOriginal, cellTc, cellProposed, cellSceneTake, cellStatus],
+                                ? [
+                                    cellProposed,
+                                    cellSceneTake,
+                                    cellOriginal,
+                                    cellTc,
+                                    cellStatus,
+                                  ]
+                                : [
+                                    cellOriginal,
+                                    cellTc,
+                                    cellProposed,
+                                    cellSceneTake,
+                                    cellStatus,
+                                  ],
                           );
                         }).toList(),
                       );
@@ -4217,7 +6046,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildStatusBadge(ProposalStatus status, {String? conflictReason, String? customText}) {
+  Widget _buildStatusBadge(
+    ProposalStatus status, {
+    String? conflictReason,
+    String? customText,
+  }) {
     Color bgColor;
     String text;
 
@@ -4261,7 +6094,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       ),
       child: Text(
         text,
-        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+        style: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 12,
+        ),
       ),
     );
   }
@@ -4271,19 +6108,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     int faltantes = _report?.totalMissing ?? 0;
     int noRegistrados = _report?.totalUnmatched ?? 0;
 
-    int readyToRename = _report?.proposals.where((p) {
-      if (p.status != ProposalStatus.ready) return false;
-      if (!_renameMetadata && p.isCompanionFile) return false;
-      return true;
-    }).length ?? 0;
+    int readyToRename =
+        _report?.proposals.where((p) {
+          if (p.status != ProposalStatus.ready) return false;
+          if (!_renameMetadata && p.isCompanionFile) return false;
+          return true;
+        }).length ??
+        0;
 
     int totalDuplicateConflicts = _duplicateClipConflicts.length;
-    int standardConflictCount = _report?.proposals.where((p) => p.status == ProposalStatus.conflict && !p.isCompanionFile).length ?? 0;
+    int standardConflictCount =
+        _report?.proposals
+            .where(
+              (p) => p.status == ProposalStatus.conflict && !p.isCompanionFile,
+            )
+            .length ??
+        0;
     int conflictCount = standardConflictCount + totalDuplicateConflicts;
-    bool hasConflicts = (_report?.proposals.any((p) => p.status == ProposalStatus.conflict) ?? false) ||
+    bool hasConflicts =
+        (_report?.proposals.any((p) => p.status == ProposalStatus.conflict) ??
+            false) ||
         _duplicateClipConflicts.isNotEmpty;
 
-    final summaryText = '$listos listos | $faltantes faltantes en disco | $noRegistrados no registrados';
+    final summaryText =
+        '$listos listos | $faltantes faltantes en disco | $noRegistrados no registrados';
 
     final actionButtons = <Widget>[
       if (hasConflicts)
@@ -4387,7 +6235,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         await _generatePreview();
         anyHandled = true;
         if (mounted) {
-          _showNotification('Carpeta de medios cargada: ${p.basename(path)} (${_report?.proposals.length ?? 0} clips detectados)');
+          _showNotification(
+            'Carpeta de medios cargada: ${p.basename(path)} (${_report?.proposals.length ?? 0} clips detectados)',
+          );
         }
         continue;
       }
@@ -4412,11 +6262,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await _generatePreview();
           anyHandled = true;
           if (mounted) {
-            _showNotification('Bitácora importada: ${p.basename(path)} (${log.records.length} tomas registradas)');
+            _showNotification(
+              'Bitácora importada: ${p.basename(path)} (${log.records.length} tomas registradas)',
+            );
           }
         } catch (e) {
           if (mounted) {
-            _showNotification('Error al leer la bitácora: Verifique que sea un archivo Excel válido', isError: true);
+            _showNotification(
+              'Error al leer la bitácora: Verifique que sea un archivo Excel válido',
+              isError: true,
+            );
           }
         } finally {
           if (mounted) {
@@ -4532,7 +6387,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       return true;
     } catch (e) {
       if (mounted) {
-        _showNotification('Error al leer la bitácora de texto: $e', isError: true);
+        _showNotification(
+          'Error al leer la bitácora de texto: $e',
+          isError: true,
+        );
       }
       return false;
     } finally {
@@ -4567,18 +6425,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           });
           await _generatePreview();
           if (mounted) {
-            _showNotification('Bitácora de Apple Pages importada: ${p.basename(path)} (${log.records.length} tomas registradas)');
+            _showNotification(
+              'Bitácora de Apple Pages importada: ${p.basename(path)} (${log.records.length} tomas registradas)',
+            );
           }
           return true;
         } else {
           if (mounted) {
-            _showNotification('No se pudo convertir el archivo de Apple Pages. Verifique que la aplicación Pages esté instalada.', isError: true);
+            _showNotification(
+              'No se pudo convertir el archivo de Apple Pages. Verifique que la aplicación Pages esté instalada.',
+              isError: true,
+            );
           }
           return false;
         }
       } catch (e) {
         if (mounted) {
-          _showNotification('Error al convertir archivo de Pages: $e', isError: true);
+          _showNotification(
+            'Error al convertir archivo de Pages: $e',
+            isError: true,
+          );
         }
         return false;
       } finally {
@@ -4630,7 +6496,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
               child: Container(
                 width: 540,
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 36),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 32,
+                  vertical: 36,
+                ),
                 decoration: BoxDecoration(
                   color: isDark
                       ? const Color(0xFF1E1E26).withValues(alpha: 0.95)
@@ -4684,9 +6553,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       runSpacing: 8,
                       alignment: WrapAlignment.center,
                       children: [
-                        _buildOverlayBadge(Icons.folder_outlined, 'Carpeta de Medios', primaryColor),
-                        _buildOverlayBadge(Icons.table_chart_outlined, 'Bitácora (.xlsx, .rtf, .txt, .pages)', Colors.green.shade600),
-                        _buildOverlayBadge(Icons.description_outlined, 'Proyecto (.renombrata)', Colors.purple.shade400),
+                        _buildOverlayBadge(
+                          Icons.folder_outlined,
+                          'Carpeta de Medios',
+                          primaryColor,
+                        ),
+                        _buildOverlayBadge(
+                          Icons.table_chart_outlined,
+                          'Bitácora (.xlsx, .rtf, .txt, .pages)',
+                          Colors.green.shade600,
+                        ),
+                        _buildOverlayBadge(
+                          Icons.description_outlined,
+                          'Proyecto (.renombrata)',
+                          Colors.purple.shade400,
+                        ),
                       ],
                     ),
                   ],
@@ -4758,7 +6639,9 @@ class _DashedBorderPainter extends CustomPainter {
     for (final metric in path.computeMetrics()) {
       double distance = 0.0;
       while (distance < metric.length) {
-        final double length = (distance + dash <= metric.length) ? dash : metric.length - distance;
+        final double length = (distance + dash <= metric.length)
+            ? dash
+            : metric.length - distance;
         final extractPath = metric.extractPath(distance, distance + length);
         canvas.drawPath(extractPath, paint);
         distance += dash + gap;

@@ -79,7 +79,7 @@ void main() {
 
       // Verify Column 2: Center Inspector & Slate
       expect(find.text('Claqueta y Bitácora'), findsOneWidget);
-      expect(find.widgetWithText(ElevatedButton, 'Guardar'), findsOneWidget);
+      expect(find.byKey(const ValueKey('studio_save_slate_button')), findsOneWidget);
 
       // Verify Column 3: Convention Editor
       expect(find.text('Convención de Texto'), findsOneWidget);
@@ -204,8 +204,8 @@ void main() {
       expect(planeFieldFinder, findsOneWidget);
       await tester.enterText(planeFieldFinder, 'P1');
 
-      // Tap Guardar
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Guardar'));
+      // Tap Guardado button
+      await tester.tap(find.byKey(const ValueKey('studio_save_slate_button')));
       await tester.pumpAndSettle();
 
       // Check notification banner

@@ -38,4 +38,23 @@ class MediaScannerService {
         .where((f) => f.isVideo || f.isXml)
         .toList();
   }
+
+  /// Detects whether any scanned files are Sony M01 metadata XML sidecars
+  /// paired with video clips.
+  static bool hasSonyM01Files(List<ScannedFile> files) {
+    final videoStems = files
+        .where((f) => f.isVideo)
+        .map((f) => p.basenameWithoutExtension(f.basename).toUpperCase())
+        .toSet();
+    for (final file in files.where((f) => f.isXml)) {
+      final xmlStem = p.basenameWithoutExtension(file.basename).toUpperCase();
+      if (xmlStem.endsWith('M01') && xmlStem.length > 3) {
+        final candidateVideo = xmlStem.substring(0, xmlStem.length - 3);
+        if (videoStems.contains(candidateVideo)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 }

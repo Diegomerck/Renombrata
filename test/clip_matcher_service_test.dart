@@ -57,7 +57,7 @@ void main() {
       var xmlProposal = report.proposals.firstWhere((p) => p.originalFilePath == 'C0001M01.XML');
       expect(xmlProposal.status, ProposalStatus.ready);
       expect(xmlProposal.isCompanionFile, true);
-      expect(xmlProposal.proposedFileName, 'MNL_071026_10_1_T1_A007_D3_U3.XML'); // upper case ext
+      expect(xmlProposal.proposedFileName, 'MNL_071026_10_1_T1_A007_D3_U3M01.XML'); // upper case ext with M01 companion
 
       var missingProposal = report.proposals.firstWhere((p) => p.status == ProposalStatus.missingFile);
       expect(missingProposal.associatedRecord?.take, '2');

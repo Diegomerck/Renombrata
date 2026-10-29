@@ -363,8 +363,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('studio_flag_ds')));
       await tester.pumpAndSettle();
 
-      // Tap Guardar
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Guardar'));
+      // Tap Guardado button
+      await tester.tap(find.byKey(const ValueKey('studio_save_slate_button')));
       await tester.pumpAndSettle();
 
       expect(find.text('Metadatos de claqueta actualizados'), findsOneWidget);
