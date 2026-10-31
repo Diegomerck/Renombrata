@@ -1470,6 +1470,32 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
       }
     }
 
+    void commitTcIn([String? submittedVal]) {
+      final currentVal = (submittedVal ?? record.tcIn ?? '').trim();
+      if (currentVal.isNotEmpty) {
+        final normalized = TimecodeUtils.normalize(
+          currentVal,
+          widget.project.log.metadata.frameRate,
+        );
+        if (normalized != record.tcIn) {
+          updateRecord(record.copyWith(tcIn: normalized));
+        }
+      }
+    }
+
+    void commitTcOut([String? submittedVal]) {
+      final currentVal = (submittedVal ?? record.tcOut ?? '').trim();
+      if (currentVal.isNotEmpty) {
+        final normalized = TimecodeUtils.normalize(
+          currentVal,
+          widget.project.log.metadata.frameRate,
+        );
+        if (normalized != record.tcOut) {
+          updateRecord(record.copyWith(tcOut: normalized));
+        }
+      }
+    }
+
     void updateSetupField({String? chapter, String? scene, String? plane}) {
       final newCap = chapter ?? record.chapter;
       final newScene = scene ?? record.scene;
@@ -1702,17 +1728,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                 width: 110, 
                 child: Focus(
                   onFocusChange: (focused) {
-                    if (!focused && record.tcIn != null && record.tcIn!.isNotEmpty) {
-                      updateRecord(record.copyWith(tcIn: TimecodeUtils.normalize(record.tcIn!, widget.project.log.metadata.frameRate)));
+                    if (!focused) {
+                      commitTcIn();
                     }
                   },
                   child: _buildGridCell(
                     record.tcIn ?? '', 
                     (v) => updateRecord(record.copyWith(tcIn: v)), 
+                    onEditingComplete: () => commitTcIn(),
+                    onFieldSubmitted: (v) => commitTcIn(v),
                     formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], 
                     hintText: 'TC In (00:00:00:00)',
                     labelText: 'TC In',
-                    key: ValueKey('${record.id}_tcIn_${record.tcIn ?? ""}'),
+                    key: ValueKey('${record.id}_tcIn'),
                   ),
                 ),
               ),
@@ -1722,17 +1750,19 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                   width: 110, 
                   child: Focus(
                     onFocusChange: (focused) {
-                      if (!focused && record.tcOut != null && record.tcOut!.isNotEmpty) {
-                        updateRecord(record.copyWith(tcOut: TimecodeUtils.normalize(record.tcOut!, widget.project.log.metadata.frameRate)));
+                      if (!focused) {
+                        commitTcOut();
                       }
                     },
                     child: _buildGridCell(
                       record.tcOut ?? '', 
                       (v) => updateRecord(record.copyWith(tcOut: v)), 
+                      onEditingComplete: () => commitTcOut(),
+                      onFieldSubmitted: (v) => commitTcOut(v),
                       formatters: [TimecodeTextInputFormatter(widget.project.log.metadata.frameRate)], 
                       hintText: 'TC Out (00:00:00:00)',
                       labelText: 'TC Out',
-                      key: ValueKey('${record.id}_tcOut_${record.tcOut ?? ""}'),
+                      key: ValueKey('${record.id}_tcOut'),
                     ),
                   ),
                 ),
@@ -1871,98 +1901,6 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                     ),
                     const SizedBox(width: 12),
                   ],
-                  if (widget.project.showDs) ...[
-                    Tooltip(
-                      message: 'Driving Shot',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(4),
-                        onTap: () => updateRecord(record.copyWith(isDs: !record.isDs)),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              key: ValueKey('${record.id}_is_ds'),
-                              value: record.isDs,
-                              onChanged: (val) => updateRecord(record.copyWith(isDs: val ?? false)),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            const Text('DS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            const SizedBox(width: 4),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
-                  if (widget.project.showFf) ...[
-                    Tooltip(
-                      message: 'Free Fly',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(4),
-                        onTap: () => updateRecord(record.copyWith(isFf: !record.isFf)),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              key: ValueKey('${record.id}_is_ff'),
-                              value: record.isFf,
-                              onChanged: (val) => updateRecord(record.copyWith(isFf: val ?? false)),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            const Text('FF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            const SizedBox(width: 4),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
-                  if (widget.project.showGpr) ...[
-                    Tooltip(
-                      message: 'GoPro',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(4),
-                        onTap: () => updateRecord(record.copyWith(isGpr: !record.isGpr)),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              key: ValueKey('${record.id}_is_gpr'),
-                              value: record.isGpr,
-                              onChanged: (val) => updateRecord(record.copyWith(isGpr: val ?? false)),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            const Text('GPR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            const SizedBox(width: 4),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
-                  if (widget.project.showDr) ...[
-                    Tooltip(
-                      message: 'Drone',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(4),
-                        onTap: () => updateRecord(record.copyWith(isDr: !record.isDr)),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              key: ValueKey('${record.id}_is_dr'),
-                              value: record.isDr,
-                              onChanged: (val) => updateRecord(record.copyWith(isDr: val ?? false)),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            const Text('DR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            const SizedBox(width: 4),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
                   if (widget.project.showTf) ...[
                     Tooltip(
                       message: 'Toma Falsa / Descartada',
@@ -2030,69 +1968,22 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     bool autofocus = false,
     FocusNode? focusNode,
     Key? key,
+    VoidCallback? onEditingComplete,
+    ValueChanged<String>? onFieldSubmitted,
   }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final defaultTextColor = isDark ? Colors.white : Colors.black87;
-    final textColor = isGhosted ? Colors.grey.withValues(alpha: 0.3) : defaultTextColor;
-
-    final cellField = TextFormField(
+    return _GridCellField(
       key: key,
-      initialValue: isGhosted ? '' : value,
+      value: value,
+      onChanged: onChanged,
+      onEditingComplete: onEditingComplete,
+      onFieldSubmitted: onFieldSubmitted,
+      formatters: formatters,
+      hintText: hintText,
+      labelText: labelText,
+      isGhosted: isGhosted,
       autofocus: autofocus,
       focusNode: focusNode,
-      inputFormatters: formatters,
-      decoration: InputDecoration(
-        labelText: labelText,
-        floatingLabelBehavior: labelText != null ? FloatingLabelBehavior.always : FloatingLabelBehavior.auto,
-        floatingLabelStyle: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        labelStyle: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).hintColor.withValues(alpha: 0.7),
-        ),
-        filled: true,
-        fillColor: isDark ? const Color(0xFF16161A) : Colors.white,
-        isDense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(4),
-          borderSide: BorderSide(
-            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
-          ),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(4),
-          borderSide: BorderSide(
-            color: Theme.of(context).colorScheme.primary,
-            width: 1.5,
-          ),
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(4),
-          borderSide: BorderSide(
-            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
-          ),
-        ),
-        hintText: isGhosted ? '—' : hintText,
-        hintStyle: TextStyle(
-          color: isGhosted ? Colors.grey.withValues(alpha: 0.3) : Theme.of(context).hintColor.withValues(alpha: 0.4),
-          fontSize: isGhosted ? 12 : 11,
-          fontWeight: isGhosted ? FontWeight.w700 : FontWeight.normal,
-        ),
-      ),
-      style: TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w700,
-        color: textColor,
-      ),
-      onChanged: onChanged,
     );
-
-    return cellField;
   }
 
   void _showConfigDialog() {
@@ -2362,5 +2253,134 @@ class _KeepAliveGridRowItemState extends State<_KeepAliveGridRowItem>
   Widget build(BuildContext context) {
     super.build(context);
     return widget.child;
+  }
+}
+
+
+class _GridCellField extends StatefulWidget {
+  final String value;
+  final ValueChanged<String> onChanged;
+  final VoidCallback? onEditingComplete;
+  final ValueChanged<String>? onFieldSubmitted;
+  final List<TextInputFormatter>? formatters;
+  final String? hintText;
+  final String? labelText;
+  final bool isGhosted;
+  final bool autofocus;
+  final FocusNode? focusNode;
+
+  const _GridCellField({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.onEditingComplete,
+    this.onFieldSubmitted,
+    this.formatters,
+    this.hintText,
+    this.labelText,
+    this.isGhosted = false,
+    this.autofocus = false,
+    this.focusNode,
+  });
+
+  @override
+  State<_GridCellField> createState() => _GridCellFieldState();
+}
+
+class _GridCellFieldState extends State<_GridCellField> {
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.isGhosted ? '' : widget.value);
+  }
+
+  @override
+  void didUpdateWidget(_GridCellField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final expectedText = widget.isGhosted ? '' : widget.value;
+    if (_controller.text != expectedText) {
+      final currentSelection = _controller.selection;
+      int newOffset = expectedText.length;
+      if (currentSelection.isValid) {
+        newOffset = currentSelection.baseOffset.clamp(0, expectedText.length);
+      }
+      _controller.value = TextEditingValue(
+        text: expectedText,
+        selection: TextSelection.collapsed(offset: newOffset),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final defaultTextColor = isDark ? Colors.white : Colors.black87;
+    final textColor = widget.isGhosted ? Colors.grey.withValues(alpha: 0.3) : defaultTextColor;
+
+    return TextFormField(
+      controller: _controller,
+      autofocus: widget.autofocus,
+      focusNode: widget.focusNode,
+      inputFormatters: widget.formatters,
+      decoration: InputDecoration(
+        labelText: widget.labelText,
+        floatingLabelBehavior: widget.labelText != null ? FloatingLabelBehavior.always : FloatingLabelBehavior.auto,
+        floatingLabelStyle: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        labelStyle: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: Theme.of(context).hintColor.withValues(alpha: 0.7),
+        ),
+        filled: true,
+        fillColor: isDark ? const Color(0xFF16161A) : Colors.white,
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
+          ),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: Theme.of(context).colorScheme.primary,
+            width: 1.5,
+          ),
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(4),
+          borderSide: BorderSide(
+            color: isDark ? const Color(0xFF383846) : const Color(0xFFBCC4D2),
+          ),
+        ),
+        hintText: widget.isGhosted ? '—' : widget.hintText,
+        hintStyle: TextStyle(
+          color: widget.isGhosted ? Colors.grey.withValues(alpha: 0.3) : Theme.of(context).hintColor.withValues(alpha: 0.4),
+          fontSize: widget.isGhosted ? 12 : 11,
+          fontWeight: widget.isGhosted ? FontWeight.w700 : FontWeight.normal,
+        ),
+      ),
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: textColor,
+      ),
+      onChanged: widget.onChanged,
+      onEditingComplete: widget.onEditingComplete,
+      onFieldSubmitted: widget.onFieldSubmitted,
+    );
   }
 }

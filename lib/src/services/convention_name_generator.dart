@@ -1,3 +1,5 @@
+import 'package:renombrata/src/models/renombrata_project.dart';
+
 /// Generates standardized media naming conventions according to the Televisa /
 /// ViX post-production standard.
 ///
@@ -26,9 +28,15 @@ class ConventionNameGenerator {
     bool isTf = false,
     bool isDr = false,
     bool isFf = false,
+    CameraType cameraType = CameraType.regular,
     bool includeProforma = false,
     String? cardName,
   }) {
+    // Camera-level types (project configuration) drive these flags.
+    isDs = isDs || cameraType == CameraType.drivingShot;
+    isFf = isFf || cameraType == CameraType.freeFly;
+    isGpr = isGpr || cameraType == CameraType.goPro;
+    isDr = isDr || cameraType == CameraType.drone;
     nomenclature = nomenclature.trim();
     date = date.trim();
     scene = scene.trim();
@@ -170,6 +178,7 @@ class ConventionNameGenerator {
     bool isTf = false,
     bool isDr = false,
     bool isFf = false,
+    CameraType cameraType = CameraType.regular,
     String? cardName,
   }) {
     return generate(
@@ -190,6 +199,7 @@ class ConventionNameGenerator {
       isTf: isTf,
       isDr: isDr,
       isFf: isFf,
+      cameraType: cameraType,
       includeProforma: true,
       cardName: cardName,
     );

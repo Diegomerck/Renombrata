@@ -11,32 +11,71 @@ class RenameService {
   }) async {
     List<Map<String, dynamic>> auditLog = [];
 
-    for (var proposal in proposals) {
-      if (proposal.status == ProposalStatus.ready) {
-        if (!renameMetadata && proposal.isCompanionFile) {
-          continue;
-        }
+    final activeProposals = proposals.where((p) {
+      if (p.status != ProposalStatus.ready) return false;
+      if (!renameMetadata && p.isCompanionFile) return false;
+      if (p.originalFilePath == null) return false;
+      return true;
+    }).toList();
 
-        if (proposal.originalFilePath == null) continue;
+    // 1. Pre-Flight Batch Collision Check (before renaming ANY file)
+    final targetPathsLower = <String, String>{};
+    for (final proposal in activeProposals) {
+      final newPath = p.join(
+        p.dirname(proposal.originalFilePath!),
+        proposal.proposedFileName,
+      );
+      final lower = newPath.toLowerCase();
+      if (targetPathsLower.containsKey(lower)) {
+        throw Exception(
+          'Operación bloqueada por seguridad: Dos o más archivos intentan renombrarse al mismo nombre (${proposal.proposedFileName}). Ningún archivo fue modificado.',
+        );
+      }
+      targetPathsLower[lower] = proposal.proposedFileName;
+    }
 
-        final originalFile = File(proposal.originalFilePath!);
-        if (await originalFile.exists()) {
-          final newPath = p.join(
-            p.dirname(proposal.originalFilePath!),
-            proposal.proposedFileName,
-          );
+    // 2. Pre-Flight Disk Existence Check (before renaming ANY file)
+    for (final proposal in activeProposals) {
+      final newPath = p.join(
+        p.dirname(proposal.originalFilePath!),
+        proposal.proposedFileName,
+      );
+      if (newPath.toLowerCase() == proposal.originalFilePath!.toLowerCase()) {
+        continue;
+      }
+      if (await File(newPath).exists()) {
+        throw Exception(
+          'Operación bloqueada por seguridad: El archivo destino ya existe en disco (${proposal.proposedFileName}). Ningún archivo fue sobrescrito.',
+        );
+      }
+    }
 
+    // 3. Rename Execution Loop with Per-File Assertions
+    for (var proposal in activeProposals) {
+      final originalFile = File(proposal.originalFilePath!);
+      if (await originalFile.exists()) {
+        final newPath = p.join(
+          p.dirname(proposal.originalFilePath!),
+          proposal.proposedFileName,
+        );
+
+        if (newPath.toLowerCase() != proposal.originalFilePath!.toLowerCase()) {
+          if (await File(newPath).exists()) {
+            throw Exception(
+              'Operación bloqueada por seguridad: El archivo destino ya existe en disco (${proposal.proposedFileName}). Ningún archivo fue sobrescrito.',
+            );
+          }
           await originalFile.rename(newPath);
-
-          auditLog.add({
-            'timestamp': DateTime.now().toIso8601String(),
-            'originalPath': proposal.originalFilePath,
-            'renamedPath': newPath,
-            'takeInfo': proposal.associatedRecord != null
-                ? 'Esc. ${proposal.associatedRecord!.scene} - T${proposal.associatedRecord!.take}'
-                : null,
-          });
         }
+
+        auditLog.add({
+          'timestamp': DateTime.now().toIso8601String(),
+          'originalPath': proposal.originalFilePath,
+          'renamedPath': newPath,
+          'takeInfo': proposal.associatedRecord != null
+              ? 'Esc. ${proposal.associatedRecord!.scene} - T${proposal.associatedRecord!.take}'
+              : null,
+        });
       }
     }
 
@@ -81,6 +120,13 @@ class RenameService {
       if (originalPath != null && renamedPath != null) {
         final renamedFile = File(renamedPath);
         if (await renamedFile.exists()) {
+          // If originalPath already exists on disk, DO NOT call rename(originalPath)!
+          if (originalPath.toLowerCase() != renamedPath.toLowerCase() &&
+              await File(originalPath).exists()) {
+            remainingHistory.add(entry);
+            continue;
+          }
+
           try {
             await renamedFile.rename(originalPath);
           } catch (e) {

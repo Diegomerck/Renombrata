@@ -64,6 +64,7 @@ void main() {
           ),
           records: [record1],
         ),
+        cameras: const [CameraConfig(name: 'A', type: CameraType.drivingShot)],
         defaultReel: 'A001',
         activeCamera: 'A',
       );
@@ -101,10 +102,6 @@ void main() {
       // Verify state flags populated correctly
       expect(homeState.studioIsMos, isTrue);
       expect(homeState.studioIsTf, isTrue);
-      expect(homeState.studioIsDs, isTrue);
-      expect(homeState.studioIsFf, isFalse);
-      expect(homeState.studioIsGpr, isFalse);
-      expect(homeState.studioIsDr, isFalse);
 
       // Verify the proposed banner displays the accurate Televisa / ViX convention
       final bannerFinder = find.byKey(const ValueKey('studio_proposed_banner_text'));
@@ -243,27 +240,16 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.widget<Text>(bannerFinder).data, contains('_15_'));
 
-      // 2. Toggle Driving Shot (DS)
-      await tester.tap(find.byKey(const ValueKey('studio_flag_ds')));
+      // 2. Toggle TF
+      await tester.tap(find.byKey(const ValueKey('studio_flag_tf')));
       await tester.pumpAndSettle();
-      expect(tester.widget<Text>(bannerFinder).data, endsWith('_DS.MP4'));
+      expect(tester.widget<Text>(bannerFinder).data, contains('_TF1_'));
 
-      // 3. Toggle Drone (DR)
-      await tester.tap(find.byKey(const ValueKey('studio_flag_dr')));
-      await tester.pumpAndSettle();
-      expect(tester.widget<Text>(bannerFinder).data, contains('_DR1_'));
-
-      // 4. Toggle Free Fly (FF)
-      await tester.tap(find.byKey(const ValueKey('studio_flag_dr'))); // turn off DR
-      await tester.tap(find.byKey(const ValueKey('studio_flag_ff')));
-      await tester.pumpAndSettle();
-      expect(tester.widget<Text>(bannerFinder).data, contains('_NFF_'));
-
-      // 5. Toggle GoPro (GPR)
-      await tester.tap(find.byKey(const ValueKey('studio_flag_ff'))); // turn off FF
-      await tester.tap(find.byKey(const ValueKey('studio_flag_gpr')));
-      await tester.pumpAndSettle();
-      expect(tester.widget<Text>(bannerFinder).data, contains('_GPR1_'));
+      // 3. Special camera flags are no longer on the slate card
+      expect(find.byKey(const ValueKey('studio_flag_ds')), findsNothing);
+      expect(find.byKey(const ValueKey('studio_flag_dr')), findsNothing);
+      expect(find.byKey(const ValueKey('studio_flag_ff')), findsNothing);
+      expect(find.byKey(const ValueKey('studio_flag_gpr')), findsNothing);
     });
 
     testWidgets('selecting a clip sets text selection to the matching line in the convention editor', (tester) async {
@@ -360,7 +346,7 @@ void main() {
 
       // Toggle flags
       await tester.tap(find.byKey(const ValueKey('studio_flag_tf')));
-      await tester.tap(find.byKey(const ValueKey('studio_flag_ds')));
+      await tester.tap(find.byKey(const ValueKey('studio_flag_mos')));
       await tester.pumpAndSettle();
 
       // Tap Guardado button
@@ -379,7 +365,7 @@ void main() {
       expect(saved.take, equals('5'));
       expect(saved.plane, equals('2'));
       expect(saved.isTf, isTrue);
-      expect(saved.isDs, isTrue);
+      expect(saved.isMos, isTrue);
     });
   });
 }

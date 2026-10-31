@@ -1,3 +1,4 @@
+import 'package:renombrata/src/ui/dialogs/folder_ingestion_dialog.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
@@ -201,10 +202,6 @@ class _HomeScreenState extends State<HomeScreen>
   String? _lastSelectedReel;
   bool _studioIsMos = false;
   bool _studioIsTf = false;
-  bool _studioIsDs = false;
-  bool _studioIsFf = false;
-  bool _studioIsGpr = false;
-  bool _studioIsDr = false;
   Timer? _studioSaveDebounceTimer;
   bool _isStudioSaving = false;
   bool _isStudioPendingSave = false;
@@ -326,16 +323,16 @@ class _HomeScreenState extends State<HomeScreen>
   bool get studioIsTf => _studioIsTf;
 
   @visibleForTesting
-  bool get studioIsDs => _studioIsDs;
+  bool get studioIsDs => false;
 
   @visibleForTesting
-  bool get studioIsFf => _studioIsFf;
+  bool get studioIsFf => false;
 
   @visibleForTesting
-  bool get studioIsGpr => _studioIsGpr;
+  bool get studioIsGpr => false;
 
   @visibleForTesting
-  bool get studioIsDr => _studioIsDr;
+  bool get studioIsDr => false;
 
   @visibleForTesting
   TextEditingController get studioChapterController => _studioChapterController;
@@ -368,6 +365,16 @@ class _HomeScreenState extends State<HomeScreen>
 
   @visibleForTesting
   Map<String, String> get livePastedOverrides => _livePastedOverrides;
+
+  @visibleForTesting
+  void updateProject(RenombrataProject newProject) =>
+      _updateProject(newProject);
+
+  @visibleForTesting
+  List<RenameProposal> get reportProposals => _report?.proposals ?? [];
+
+  @visibleForTesting
+  Future<void> checkAndSyncTimecodes(DryRunReport report) => _checkAndSyncTimecodes(report);
 
   final TextEditingController _reelController = TextEditingController(
     text: '001',
@@ -692,6 +699,14 @@ class _HomeScreenState extends State<HomeScreen>
     final clips = _studioMediaClips;
     if (clips.isEmpty) return;
 
+    final selClip = _selectedStudioClip;
+    final existingLines = _conventionEditorController.text.split('\n');
+    if (_project.log.records.isEmpty &&
+        _conventionEditorController.text.trim().isEmpty &&
+        (selClip == null || !_isStudioSlateModified(selClip))) {
+      return;
+    }
+
     final newLines = <String>[];
     for (int i = 0; i < clips.length; i++) {
       final clip = clips[i];
@@ -700,6 +715,14 @@ class _HomeScreenState extends State<HomeScreen>
 
       final isCurrentSelected =
           _selectedStudioClip?.originalFilePath == clip.originalFilePath;
+      final hadLine =
+          i < existingLines.length && existingLines[i].trim().isNotEmpty;
+      if (rec == null &&
+          !(isCurrentSelected && _isStudioSlateModified(clip)) &&
+          !hadLine) {
+        newLines.add('');
+        continue;
+      }
 
       final chapter =
           isCurrentSelected && _studioChapterController.text.trim().isNotEmpty
@@ -745,6 +768,9 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
+    while (newLines.isNotEmpty && newLines.last.trim().isEmpty) {
+      newLines.removeLast();
+    }
     _conventionEditorController.text = newLines.join('\n');
     _evaluateConventionMatches();
   }
@@ -937,7 +963,10 @@ class _HomeScreenState extends State<HomeScreen>
           _manualOverrides = {};
           _baseReport = null;
         });
-        _generatePreview();
+        await _generatePreview();
+        if (_report != null) {
+          await _checkAndSyncTimecodes(_report!);
+        }
         if (mounted) {
           _showNotification('Bitácora importada correctamente.');
         }
@@ -966,26 +995,20 @@ class _HomeScreenState extends State<HomeScreen>
       );
 
       if (selectedDirectory != null) {
-        setState(() {
-          _mediaFolderPath = selectedDirectory;
-          _manualOverrides = {};
-        });
-        await _generatePreview();
-        if (mounted) {
-          final folderName = selectedDirectory
-              .split(Platform.pathSeparator)
-              .last;
-          final totalScanned = _report?.proposals.length ?? 0;
-          if (_project.log.records.isEmpty) {
-            _showNotification(
-              'Carpeta "$folderName" seleccionada ($totalScanned clips detectados). Importa un Excel o crea tomas en la Bitácora Digital para generar propuestas.',
-            );
-          } else {
-            _showNotification(
-              'Carpeta "$folderName" cargada correctamente ($totalScanned clips analizados).',
-            );
-          }
-        }
+        final scannedFiles = MediaScannerService.scanDirectory(
+          selectedDirectory,
+          searchSubdirectories: true,
+        );
+        if (!mounted) return;
+        final result = await FolderIngestionDialog.show(
+          context: context,
+          folderPath: selectedDirectory,
+          project: _project,
+          scannedFiles: scannedFiles,
+        );
+        if (result == null || !mounted) return;
+
+        await _applyFolderIngestionResult(selectedDirectory, result);
       }
     } catch (e) {
       if (mounted) {
@@ -994,6 +1017,78 @@ class _HomeScreenState extends State<HomeScreen>
           isError: true,
         );
       }
+    }
+  }
+
+  Future<void> _applyFolderIngestionResult(
+    String folderPath,
+    FolderIngestionResult result,
+  ) async {
+    setState(() {
+      _mediaFolderPath = folderPath;
+      _manualOverrides = {};
+      _baseReport = null;
+
+      if (result.nomenclature != null ||
+          result.date != null ||
+          result.unit != null) {
+        final metadata = _project.log.metadata.copyWith(
+          nomenclature: result.nomenclature?.isNotEmpty == true
+              ? result.nomenclature!
+              : _project.log.metadata.nomenclature,
+          production: result.nomenclature?.isNotEmpty == true
+              ? result.nomenclature!
+              : _project.log.metadata.production,
+          date: result.date?.isNotEmpty == true
+              ? result.date!
+              : _project.log.metadata.date,
+          unit: result.unit?.isNotEmpty == true
+              ? result.unit!
+              : _project.log.metadata.unit,
+        );
+        _project = _project.copyWith(
+          log: _project.log.copyWith(metadata: metadata),
+        );
+      }
+
+      final camName = result.selectedCamera;
+      final camType = result.cameraType;
+      var currentCameras = List<CameraConfig>.from(
+        result.updatedCameras ?? _project.cameras,
+      );
+      final existingIdx = currentCameras.indexWhere(
+        (c) => c.name.toUpperCase() == camName.toUpperCase(),
+      );
+      if (existingIdx != -1) {
+        currentCameras[existingIdx] = currentCameras[existingIdx].copyWith(
+          type: camType,
+        );
+      } else {
+        currentCameras.add(CameraConfig(name: camName, type: camType));
+      }
+
+      final effectiveReel = result.reel?.isNotEmpty == true
+          ? result.reel!
+          : _computeDefaultReel(camName);
+      _project = _project.copyWith(
+        cameras: currentCameras,
+        activeCamera: camName,
+        defaultReel: effectiveReel,
+      );
+      _reelController.text = effectiveReel;
+      _isDirty = true;
+    });
+
+    await _generatePreview();
+    if (_report != null) {
+      await _checkAndSyncTimecodes(_report!);
+    }
+    if (mounted) {
+      final folderName = p.basename(folderPath);
+      final totalScanned = _report?.proposals.length ?? 0;
+      _showNotification(
+        'Carpeta de medios cargada: $folderName ($totalScanned clips detectados)',
+      );
     }
   }
 
@@ -1064,6 +1159,9 @@ class _HomeScreenState extends State<HomeScreen>
         renameHistory: history,
         manualOverrides: const {},
         pairM01Sidecars: pairM01,
+        cameraTypes: {
+          for (final c in _project.cameras) c.name.toUpperCase(): c.type,
+        },
       );
 
       final report = _manualOverrides.isEmpty
@@ -1078,6 +1176,9 @@ class _HomeScreenState extends State<HomeScreen>
               renameHistory: history,
               manualOverrides: _manualOverrides,
               pairM01Sidecars: pairM01,
+              cameraTypes: {
+                for (final c in _project.cameras) c.name.toUpperCase(): c.type,
+              },
             );
 
       setState(() {
@@ -1160,7 +1261,10 @@ class _HomeScreenState extends State<HomeScreen>
       }
     } catch (e) {
       if (mounted) {
-        _showNotification('Error durante el renombrado: $e', isError: true);
+        final message = e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : e.toString();
+        _showNotification(message, isError: true);
       }
     } finally {
       setState(() {
@@ -1406,6 +1510,109 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
+    bool _doReelsMatchForCamera({
+    required String? lineReel,
+    required String clipReel,
+    required String? clipFilePath,
+  }) {
+    if (lineReel == null || lineReel.trim().isEmpty) return true;
+
+    final lReel = lineReel.trim().toUpperCase();
+    final cReel = clipReel.trim().toUpperCase();
+
+    // Extract explicit leading camera letter from lineReel (e.g. "A" in "A001")
+    final lCamMatch = RegExp(r'^([A-Z])\d+').firstMatch(lReel);
+    final lCam = lCamMatch?.group(1);
+
+    // Extract clip camera from clipReel or clip filename
+    final cCamMatch = RegExp(r'^([A-Z])\d+').firstMatch(cReel);
+    String? cCam = cCamMatch?.group(1);
+    if (cCam == null && clipFilePath != null && clipFilePath.isNotEmpty) {
+      cCam = ClipMatcherService.extractCamera(clipFilePath);
+    }
+
+    // Rule A: If both lineReel and clip have explicit camera letters and they differ, return false immediately!
+    if (lCam != null && cCam != null && lCam != cCam) {
+      return false;
+    }
+
+    // Rule B: If _project.activeCamera != 'ALL', and lCam != null && lCam != _project.activeCamera.toUpperCase():
+    if (_project.activeCamera.toUpperCase() != 'ALL' &&
+        lCam != null &&
+        lCam != _project.activeCamera.toUpperCase()) {
+      return false;
+    }
+
+    // Extract numeric portions
+    final lReelNumeric = lReel.replaceAll(RegExp(r'^[A-Z]'), '');
+    final cReelNumeric = cReel.replaceAll(RegExp(r'^[A-Z]'), '');
+
+    if (lReel == cReel) return true;
+    if (_project.activeCamera.toUpperCase() != 'ALL') {
+      if ('${_project.activeCamera.toUpperCase()}$lReel' == cReel) return true;
+      if (lReel == '${_project.activeCamera.toUpperCase()}$cReel') return true;
+    }
+
+    // Rule C: Only when camera letters do not conflict (either lCam == cCam, or lReel
+    // is purely numeric like "001" and the clip belongs to the active camera) may
+    // lReelNumeric == cReelNumeric return true.
+    if (lReelNumeric.isNotEmpty && lReelNumeric == cReelNumeric) {
+      if (lCam != null && cCam != null && lCam == cCam) {
+        return true;
+      }
+      if (lCam == null) {
+        if (_project.activeCamera.toUpperCase() == 'ALL') {
+          return true;
+        } else if (cCam == null || cCam == _project.activeCamera.toUpperCase()) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  bool _hasUnappliedTextOverride(RenameProposal proposal) {
+    if (proposal.originalFilePath == null) return false;
+    final path = proposal.originalFilePath!;
+    if (!_livePastedOverrides.containsKey(path)) return false;
+    if (_duplicateClipConflicts.containsKey(path)) return false;
+
+    final override = _livePastedOverrides[path]!;
+    final origExt = p.extension(path);
+    final targetWithExt = p.extension(override).isEmpty && origExt.isNotEmpty
+        ? '$override$origExt'
+        : override;
+
+    return proposal.status != ProposalStatus.ready ||
+        proposal.proposedFileName.toLowerCase() != targetWithExt.toLowerCase();
+  }
+
+  String? _getOriginalClipName(RenameProposal clip) {
+    if (clip.originalFilePath == null) return null;
+    final path = clip.originalFilePath!;
+    final base = p.basename(path).toLowerCase();
+    for (final entry in _renameHistory) {
+      final renamedPath = entry['renamedPath'] as String?;
+      final originalPath = entry['originalPath'] as String?;
+      if (renamedPath != null && originalPath != null) {
+        if (p.basename(renamedPath).toLowerCase() == base ||
+            renamedPath.toLowerCase() == path.toLowerCase()) {
+          return p.basename(originalPath);
+        }
+      }
+    }
+    return null;
+  }
+
+  String _getOriginalClipSubtitle(RenameProposal clip) {
+    final orig = _getOriginalClipName(clip);
+    if (orig != null && orig.isNotEmpty) {
+      return 'Original: $orig';
+    }
+    return 'Renombrado en disco';
+  }
+
   void _evaluateConventionMatches() {
     if (_report == null) return;
 
@@ -1479,6 +1686,7 @@ class _HomeScreenState extends State<HomeScreen>
     // Check for duplicate files on disk for the same (Reel, ClipNumber)
     final diskClipsByKey = <String, List<RenameProposal>>{};
     for (final clip in mediaClips) {
+      if (clip.status == ProposalStatus.alreadyRenamed) continue;
       final fileName = p.basename(clip.originalFilePath!);
       final reel = _getProposalReel(clip).toUpperCase();
       final clipNumStr = ClipMatcherService.extractClipNumber(fileName);
@@ -1514,6 +1722,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (newDuplicateClipConflicts.isNotEmpty) {
       bool reportChanged = false;
       final updatedProposals = _report!.proposals.map((prop) {
+        if (prop.status == ProposalStatus.alreadyRenamed) return prop;
         if (prop.originalFilePath != null &&
             newDuplicateClipConflicts.containsKey(prop.originalFilePath)) {
           if (prop.status != ProposalStatus.conflict) {
@@ -1533,6 +1742,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     // Intelligent matching by (Reel, ClipNumber) - without arbitrary sequential fallback
     for (final clip in mediaClips) {
+      if (clip.status == ProposalStatus.alreadyRenamed) continue;
       final path = clip.originalFilePath!;
       if (newDuplicateClipConflicts.containsKey(path)) continue;
       if (_resolvedConflictPaths.contains(path)) continue;
@@ -1547,20 +1757,11 @@ class _HomeScreenState extends State<HomeScreen>
       for (final line in parsedLines) {
         if (!line.hasExtractedClip || line.clipNumber != clipNum) continue;
 
-        if (line.reel != null) {
-          final lReel = line.reel!.toUpperCase();
-          final cReel = reel.toUpperCase();
-          final lReelNumeric = lReel.replaceAll(RegExp(r'^[A-Z]'), '');
-          final cReelNumeric = cReel.replaceAll(RegExp(r'^[A-Z]'), '');
-          final matches =
-              lReel == cReel ||
-              '${_project.activeCamera}$lReel' == cReel ||
-              lReel == '${_project.activeCamera}$cReel' ||
-              (lReelNumeric.isNotEmpty && lReelNumeric == cReelNumeric);
-          if (matches) {
-            candidates.add(line);
-          }
-        } else {
+        if (_doReelsMatchForCamera(
+          lineReel: line.reel,
+          clipReel: reel,
+          clipFilePath: path,
+        )) {
           candidates.add(line);
         }
       }
@@ -1704,14 +1905,11 @@ class _HomeScreenState extends State<HomeScreen>
         final cn = int.tryParse(ClipMatcherService.extractClipNumber(fn));
         final r = _getProposalReel(c).toUpperCase();
         if (cn != clipNum) return false;
-        if (lineReel == null) return true;
-        final lr = lineReel.toUpperCase();
-        final lrNum = lr.replaceAll(RegExp(r'^[A-Z]'), '');
-        final rNum = r.replaceAll(RegExp(r'^[A-Z]'), '');
-        return lr == r ||
-            lrNum == rNum ||
-            '${_project.activeCamera}$lr' == r ||
-            lr == '${_project.activeCamera}$r';
+        return _doReelsMatchForCamera(
+          lineReel: lineReel,
+          clipReel: r,
+          clipFilePath: c.originalFilePath,
+        );
       }).toList();
 
       if (matchingClipsOnDisk.length > 1) {
@@ -1727,16 +1925,39 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         );
       } else if (matchingClipsOnDisk.isEmpty) {
-        // No matching file on disk
-        statuses.add(
-          _ConventionLineStatus(
-            lineNumber: lineIndex,
-            text:
-                'Línea $lineIndex: Sin archivo en disco (Clip #$clipNumDisplay)',
-            icon: Icons.info_outline,
-            color: Colors.amber,
-          ),
-        );
+        final alreadyRenamedProp = _report!.proposals.where((prop) {
+          if (prop.status != ProposalStatus.alreadyRenamed) return false;
+          final fn = prop.originalFilePath != null
+              ? p.basenameWithoutExtension(prop.originalFilePath!)
+              : p.basenameWithoutExtension(prop.proposedFileName);
+          return fn.toLowerCase() == trimmed.toLowerCase();
+        }).firstOrNull;
+
+        if (alreadyRenamedProp != null) {
+          final fn = p.basename(
+            alreadyRenamedProp.originalFilePath ??
+                alreadyRenamedProp.proposedFileName,
+          );
+          statuses.add(
+            _ConventionLineStatus(
+              lineNumber: lineIndex,
+              text: 'Línea $lineIndex: Renombrado en disco ($fn)',
+              icon: Icons.task_alt,
+              color: Colors.green,
+              targetFilePath: alreadyRenamedProp.originalFilePath,
+            ),
+          );
+        } else {
+          statuses.add(
+            _ConventionLineStatus(
+              lineNumber: lineIndex,
+              text:
+                  'Línea $lineIndex: Sin archivo en disco (Clip #$clipNumDisplay)',
+              icon: Icons.info_outline,
+              color: Colors.amber,
+            ),
+          );
+        }
       } else {
         // Single file on disk, but conflict in text or not matched
         statuses.add(
@@ -1755,7 +1976,11 @@ class _HomeScreenState extends State<HomeScreen>
     return statuses;
   }
 
-  String? _findConventionNameForClip(String reel, int clipNumber) {
+  String? _findConventionNameForClip(
+    String reel,
+    int clipNumber, [
+    String? clipFilePath,
+  ]) {
     final lines = _conventionEditorController.text
         .split(RegExp(r'\r?\n'))
         .map((l) => l.trim())
@@ -1768,11 +1993,11 @@ class _HomeScreenState extends State<HomeScreen>
         i + 1,
       );
       if (parsed.hasExtractedClip && parsed.clipNumber == clipNumber) {
-        if (parsed.reel != null) {
-          if (parsed.reel!.toUpperCase() == reel.toUpperCase()) {
-            return parsed.rawLine;
-          }
-        } else {
+        if (_doReelsMatchForCamera(
+          lineReel: parsed.reel,
+          clipReel: reel,
+          clipFilePath: clipFilePath,
+        )) {
           return parsed.rawLine;
         }
       }
@@ -1890,6 +2115,10 @@ class _HomeScreenState extends State<HomeScreen>
     final matchedCount = _livePastedOverrides.keys
         .where((k) => !_duplicateClipConflicts.containsKey(k))
         .length;
+    final unappliedCount = mediaClips
+        .where(_hasUnappliedTextOverride)
+        .length;
+    final isApplied = unappliedCount == 0 && matchedCount > 0;
 
     final theme = Theme.of(context);
     final hasFocus =
@@ -2148,11 +2377,19 @@ class _HomeScreenState extends State<HomeScreen>
                       children: [
                         Expanded(
                           child: FilledButton.icon(
-                            icon: const Icon(Icons.check, size: 16),
-                            label: Text(
-                              'Aplicar Coincidencias ($matchedCount)',
+                            icon: Icon(
+                              isApplied ? Icons.check_circle : Icons.check,
+                              size: 16,
+                              color: isApplied ? Colors.green : null,
                             ),
-                            onPressed: matchedCount > 0
+                            label: Text(
+                              unappliedCount > 0
+                                  ? 'Aplicar Coincidencias ($unappliedCount)'
+                                  : (matchedCount > 0
+                                      ? 'Coincidencias Aplicadas ($matchedCount)'
+                                      : 'Aplicar Coincidencias (0)'),
+                            ),
+                            onPressed: unappliedCount > 0
                                 ? _applyNonBlockingMatches
                                 : null,
                           ),
@@ -2335,10 +2572,6 @@ class _HomeScreenState extends State<HomeScreen>
         _studioNotesController.text = rec.observations ?? '';
         _studioIsMos = rec.isMos;
         _studioIsTf = rec.isTf;
-        _studioIsDs = rec.isDs;
-        _studioIsFf = rec.isFf;
-        _studioIsGpr = rec.isGpr;
-        _studioIsDr = rec.isDr;
       } else {
         _studioChapterController.text = '';
         _studioSceneController.text = '';
@@ -2348,10 +2581,6 @@ class _HomeScreenState extends State<HomeScreen>
         _studioNotesController.text = '';
         _studioIsMos = false;
         _studioIsTf = false;
-        _studioIsDs = false;
-        _studioIsFf = false;
-        _studioIsGpr = false;
-        _studioIsDr = false;
       }
     });
 
@@ -2451,11 +2680,7 @@ class _HomeScreenState extends State<HomeScreen>
           currentScene.isNotEmpty ||
           (currentTake.isNotEmpty && currentTake != '1') ||
           _studioIsMos ||
-          _studioIsTf ||
-          _studioIsDs ||
-          _studioIsFf ||
-          _studioIsGpr ||
-          _studioIsDr;
+          _studioIsTf;
     }
 
     return currentCap != rec.chapter.trim() ||
@@ -2464,14 +2689,16 @@ class _HomeScreenState extends State<HomeScreen>
         currentTake != rec.take.trim() ||
         currentNotes != (rec.observations ?? '').trim() ||
         _studioIsMos != rec.isMos ||
-        _studioIsTf != rec.isTf ||
-        _studioIsDs != rec.isDs ||
-        _studioIsFf != rec.isFf ||
-        _studioIsGpr != rec.isGpr ||
-        _studioIsDr != rec.isDr;
+        _studioIsTf != rec.isTf;
   }
 
   String _computeStudioProposedBanner(RenameProposal clip) {
+    if (clip.associatedRecord == null &&
+        !_isStudioSlateModified(clip) &&
+        (clip.originalFilePath == null ||
+            !_livePastedOverrides.containsKey(clip.originalFilePath))) {
+      return 'Sin propuesta (ingresa datos en la claqueta o vincula una toma)';
+    }
     if (!_isStudioSlateModified(clip) &&
         clip.originalFilePath != null &&
         _livePastedOverrides.containsKey(clip.originalFilePath)) {
@@ -2489,6 +2716,14 @@ class _HomeScreenState extends State<HomeScreen>
     final clipNum = ClipMatcherService.extractClipNumber(
       clip.originalFilePath ?? '',
     );
+    final detectedCamera = clip.originalFilePath != null
+        ? ClipMatcherService.extractCamera(
+            clip.originalFilePath!,
+            fallback:
+                _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
+          )
+        : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
+
     final fileReel =
         clip.fileReel ??
         ClipMatcherService.extractReel(clip.originalFilePath ?? '');
@@ -2496,7 +2731,7 @@ class _HomeScreenState extends State<HomeScreen>
         ? _reelController.text.trim()
         : (fileReel ??
               clip.associatedRecord?.reel ??
-              '${_project.activeCamera}001');
+              '${detectedCamera}001');
 
     final capText = _studioChapterController.text.trim();
     final cap = _project.showChapter
@@ -2546,7 +2781,13 @@ class _HomeScreenState extends State<HomeScreen>
         ? _project.log.metadata.day.trim()
         : 'D01';
 
-    final unit = _studioIsDs
+    final camType = _project.getCameraType(detectedCamera);
+    final isDs = camType == CameraType.drivingShot;
+    final isFf = camType == CameraType.freeFly;
+    final isGpr = camType == CameraType.goPro;
+    final isDr = camType == CameraType.drone;
+
+    final unit = isDs
         ? 'DS'
         : (_project.log.metadata.unit.trim().isNotEmpty
               ? _project.log.metadata.unit.trim()
@@ -2560,7 +2801,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     String? normalizedClip;
     final recClip = clip.associatedRecord?.cameras
-        .where((c) => c.cameraName == _project.activeCamera)
+        .where((c) => c.cameraName.toUpperCase() == detectedCamera.toUpperCase())
         .firstOrNull
         ?.clipName;
     final candidateClip = (recClip != null && recClip.trim().isNotEmpty)
@@ -2574,14 +2815,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     final reelText = _studioReelController.text.trim();
-    final effectiveReel = reelText.isNotEmpty ? reelText : defaultReel;
-
-    final detectedCamera = clip.originalFilePath != null
-        ? ClipMatcherService.extractCamera(
-            clip.originalFilePath!,
-            fallback: _project.activeCamera,
-          )
-        : _project.activeCamera;
+    final effectiveReel = fileReel ?? (reelText.isNotEmpty ? reelText : defaultReel);
 
     final base = ConventionNameGenerator.generate(
       nomenclature: prod,
@@ -2592,16 +2826,17 @@ class _HomeScreenState extends State<HomeScreen>
       scene: scene,
       plane: plane,
       take: rawTake,
-      reel: effectiveReel,
+      reel: ConventionGeneratorService.formatReelWithCamera(effectiveReel, detectedCamera),
       day: day,
       clipIndex: normalizedClip,
       unit: unit,
       activeCamera: detectedCamera,
+      cameraType: camType,
       isTf: _studioIsTf,
-      isDs: _studioIsDs,
-      isFf: _studioIsFf,
-      isGpr: _studioIsGpr,
-      isDr: _studioIsDr,
+      isDs: isDs,
+      isFf: isFf,
+      isGpr: isGpr,
+      isDr: isDr,
     );
 
     return '$base$origExt';
@@ -2628,9 +2863,13 @@ class _HomeScreenState extends State<HomeScreen>
     final camera = clip.originalFilePath != null
         ? ClipMatcherService.extractCamera(
             clip.originalFilePath!,
-            fallback: _project.activeCamera,
+            fallback:
+                _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
           )
-        : _project.activeCamera;
+        : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
+    final fileReel = clip.fileReel ??
+        ClipMatcherService.extractReel(clip.originalFilePath ?? '');
+    final effectiveReel = fileReel ?? reel;
     final clipNum = ClipMatcherService.extractClipNumber(
       clip.originalFilePath ?? '',
     );
@@ -2675,10 +2914,6 @@ class _HomeScreenState extends State<HomeScreen>
         observations: notes.isNotEmpty ? notes : existing.observations,
         isMos: _studioIsMos,
         isTf: _studioIsTf,
-        isDs: _studioIsDs,
-        isFf: _studioIsFf,
-        isGpr: _studioIsGpr,
-        isDr: _studioIsDr,
       );
     } else {
       final newRecord = ShotRecord(
@@ -2693,10 +2928,6 @@ class _HomeScreenState extends State<HomeScreen>
         observations: notes.isNotEmpty ? notes : null,
         isMos: _studioIsMos,
         isTf: _studioIsTf,
-        isDs: _studioIsDs,
-        isFf: _studioIsFf,
-        isGpr: _studioIsGpr,
-        isDr: _studioIsDr,
       );
       records.add(newRecord);
     }
@@ -2711,7 +2942,7 @@ class _HomeScreenState extends State<HomeScreen>
       scene: scene,
       plane: plane.isNotEmpty ? plane : null,
       take: take,
-      reel: reel,
+      reel: effectiveReel,
       camera: camera,
       clipIndex: clipIndex,
     );
@@ -2760,10 +2991,6 @@ class _HomeScreenState extends State<HomeScreen>
       final notes = _studioNotesController.text.trim();
       final isMos = _studioIsMos;
       final isTf = _studioIsTf;
-      final isDs = _studioIsDs;
-      final isFf = _studioIsFf;
-      final isGpr = _studioIsGpr;
-      final isDr = _studioIsDr;
 
       final clipNum = ClipMatcherService.extractClipNumber(
         prop.originalFilePath ?? '',
@@ -2781,9 +3008,10 @@ class _HomeScreenState extends State<HomeScreen>
       final effectiveCamera = prop.originalFilePath != null
           ? ClipMatcherService.extractCamera(
               prop.originalFilePath!,
-              fallback: _project.activeCamera,
+              fallback:
+                  _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
             )
-          : _project.activeCamera;
+          : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
 
       final records = List<ShotRecord>.from(_project.log.records);
       final existingIdx = records.indexWhere(
@@ -2822,10 +3050,6 @@ class _HomeScreenState extends State<HomeScreen>
           observations: notes.isNotEmpty ? notes : existing.observations,
           isMos: isMos,
           isTf: isTf,
-          isDs: isDs,
-          isFf: isFf,
-          isGpr: isGpr,
-          isDr: isDr,
         );
       } else {
         final newRecord = ShotRecord(
@@ -2845,10 +3069,6 @@ class _HomeScreenState extends State<HomeScreen>
           observations: notes.isNotEmpty ? notes : null,
           isMos: isMos,
           isTf: isTf,
-          isDs: isDs,
-          isFf: isFf,
-          isGpr: isGpr,
-          isDr: isDr,
         );
         records.add(newRecord);
       }
@@ -2993,10 +3213,6 @@ class _HomeScreenState extends State<HomeScreen>
     _studioNotesController.text = '';
     _studioIsMos = false;
     _studioIsTf = false;
-    _studioIsDs = false;
-    _studioIsFf = false;
-    _studioIsGpr = false;
-    _studioIsDr = false;
 
     if (recordUpdated) {
       _project = _project.copyWith(
@@ -3087,10 +3303,6 @@ class _HomeScreenState extends State<HomeScreen>
     _studioNotesController.text = updatedRecord.observations ?? '';
     _studioIsMos = updatedRecord.isMos;
     _studioIsTf = updatedRecord.isTf;
-    _studioIsDs = updatedRecord.isDs;
-    _studioIsFf = updatedRecord.isFf;
-    _studioIsGpr = updatedRecord.isGpr;
-    _studioIsDr = updatedRecord.isDr;
 
     final List<ShotRecord> finalRecords;
     if (_project.autoSortByClip) {
@@ -3177,12 +3389,28 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       );
     }
-    if (proposal.originalFilePath != null &&
-        _livePastedOverrides.containsKey(proposal.originalFilePath)) {
+    if (proposal.status == ProposalStatus.alreadyRenamed) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: Colors.green.shade700,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: const Text(
+          'Renombrado',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      );
+    }
+    if (_hasUnappliedTextOverride(proposal)) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.purple.shade700,
           borderRadius: BorderRadius.circular(4),
         ),
         child: const Text(
@@ -3216,8 +3444,8 @@ class _HomeScreenState extends State<HomeScreen>
         break;
       case ProposalStatus.renamed:
       case ProposalStatus.alreadyRenamed:
-        color = Colors.blue;
-        label = 'OK';
+        color = Colors.green.shade700;
+        label = 'Renombrado';
         break;
     }
     return Container(
@@ -3235,6 +3463,284 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  String? _findCompanionXmlPath(RenameProposal clip) {
+    if (clip.companionFilePath != null && clip.companionFilePath!.isNotEmpty) {
+      return clip.companionFilePath;
+    }
+    if (_report == null || clip.originalFilePath == null) return null;
+    final videoStem = p.basenameWithoutExtension(clip.originalFilePath!).toUpperCase();
+    for (final pItem in _report!.proposals) {
+      if (pItem.isCompanionFile && pItem.originalFilePath != null) {
+        final xmlStem = p.basenameWithoutExtension(pItem.originalFilePath!).toUpperCase();
+        if (xmlStem == videoStem ||
+            xmlStem == '${videoStem}M01' ||
+            videoStem == '${xmlStem}M01' ||
+            pItem.companionFilePath == clip.originalFilePath) {
+          return pItem.originalFilePath;
+        }
+      }
+    }
+    return null;
+  }
+
+  Widget _buildXmlBadge(RenameProposal clip, ThemeData theme, bool isDark) {
+    final companionPath = _findCompanionXmlPath(clip);
+    final hasXml = companionPath != null;
+    final xmlBasename = hasXml ? p.basename(companionPath) : null;
+
+    return Tooltip(
+      message: hasXml ? 'Sidecar XML: $xmlBasename' : 'Sin archivo XML complementario',
+      child: Container(
+        key: ValueKey('xml_badge_${clip.originalFilePath ?? clip.proposedFileName}'),
+        margin: const EdgeInsets.only(left: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+        decoration: BoxDecoration(
+          color: hasXml
+              ? (isDark ? Colors.green.shade900.withValues(alpha: 0.35) : Colors.green.shade50)
+              : (isDark ? Colors.grey.shade800.withValues(alpha: 0.3) : Colors.grey.shade200),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: hasXml
+                ? (isDark ? Colors.green.shade600 : Colors.green.shade400)
+                : (isDark ? Colors.grey.shade700 : Colors.grey.shade400),
+            width: 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.description_outlined,
+              size: 11,
+              color: hasXml
+                ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+                : theme.hintColor,
+            ),
+            const SizedBox(width: 3),
+            Text(
+              hasXml ? 'XML' : 'Sin XML',
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.bold,
+                color: hasXml
+                    ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+                    : theme.hintColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStudioFileDetailsHeader(
+    RenameProposal clip,
+    ThemeData theme,
+    bool isDark,
+  ) {
+    String folderName = '—';
+    String folderPath = '—';
+    String formattedSize = '—';
+    String formattedDate = '—';
+
+    if (clip.originalFilePath != null) {
+      folderPath = p.dirname(clip.originalFilePath!);
+      folderName = p.basename(folderPath);
+
+      try {
+        final file = File(clip.originalFilePath!);
+        if (file.existsSync()) {
+          final bytes = file.lengthSync();
+          if (bytes >= 1024 * 1024 * 1024) {
+            formattedSize = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+          } else if (bytes >= 1024 * 1024) {
+            formattedSize = '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+          } else if (bytes >= 1024) {
+            formattedSize = '${(bytes / 1024).toStringAsFixed(0)} KB';
+          } else {
+            formattedSize = '$bytes B';
+          }
+
+          final mod = file.lastModifiedSync();
+          final d = mod.day.toString().padLeft(2, '0');
+          final m = mod.month.toString().padLeft(2, '0');
+          final y = mod.year.toString();
+          final hh = mod.hour.toString().padLeft(2, '0');
+          final mm = mod.minute.toString().padLeft(2, '0');
+          formattedDate = '$d/$m/$y $hh:$mm';
+        }
+      } catch (_) {}
+    }
+
+    final companionPath = _findCompanionXmlPath(clip);
+    final hasXml = companionPath != null;
+    final xmlText = hasXml ? 'Sidecar: ${p.basename(companionPath)}' : 'Sin archivo XML';
+
+    final textStyle = TextStyle(
+      fontSize: 10.5,
+      fontWeight: FontWeight.w500,
+      color: theme.textTheme.bodyMedium?.color?.withValues(alpha: 0.85),
+    );
+
+    return Container(
+      key: const ValueKey('studio_file_details_header'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: isDark ? theme.colorScheme.surfaceContainerHighest : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: theme.dividerColor.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Tooltip(
+            message: folderPath,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.folder_open, size: 13, color: theme.colorScheme.primary),
+                const SizedBox(width: 4),
+                Text(folderName, style: textStyle),
+              ],
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.storage, size: 13, color: theme.colorScheme.secondary),
+              const SizedBox(width: 4),
+              Text(formattedSize, style: textStyle),
+            ],
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.calendar_today, size: 13, color: theme.hintColor),
+              const SizedBox(width: 4),
+              Text(formattedDate, style: textStyle),
+            ],
+          ),
+          Tooltip(
+            message: hasXml ? companionPath : 'Sin archivo XML complementario',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.integration_instructions,
+                  size: 13,
+                  color: hasXml ? Colors.green.shade600 : theme.hintColor,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  xmlText,
+                  style: textStyle.copyWith(
+                    color: hasXml
+                        ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+                        : theme.hintColor,
+                    fontWeight: hasXml ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _checkAndSyncTimecodes(DryRunReport report) async {
+    if (!mounted || _project.log.records.isEmpty) return;
+
+    final tcProposals = report.proposals.where((p) {
+      return !p.isCompanionFile &&
+          p.associatedRecord != null &&
+          p.fileTcIn != null &&
+          p.fileTcIn!.trim().isNotEmpty;
+    }).toList();
+
+    if (tcProposals.isEmpty) return;
+
+    final recordsMap = {for (final r in _project.log.records) r.id: r};
+    final emptyTcRecordsToUpdate = <String, (String, String?)>{};
+    final differingTcRecordsToUpdate = <String, (String, String?)>{};
+    String? sampleDifferingTc;
+
+    for (final prop in tcProposals) {
+      final rec = recordsMap[prop.associatedRecord!.id];
+      if (rec == null) continue;
+      final fileIn = prop.fileTcIn!.trim();
+      final fileOut = prop.fileTcOut?.trim();
+
+      final recTcIn = (rec.tcIn ?? '').trim();
+      if (recTcIn.isEmpty) {
+        emptyTcRecordsToUpdate[rec.id] = (fileIn, fileOut);
+      } else if (recTcIn != fileIn) {
+        differingTcRecordsToUpdate[rec.id] = (fileIn, fileOut);
+        sampleDifferingTc ??= fileIn;
+      }
+    }
+
+    bool shouldUpdateDiffering = false;
+    if (differingTcRecordsToUpdate.isNotEmpty && mounted) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Actualizar Timecodes desde Archivos'),
+          content: Text(
+            'Se detectaron timecodes en los archivos importados (ej. TC In: $sampleDifferingTc). '
+            '¿Deseas actualizar la bitácora con los timecodes de los archivos de video?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('No, mantener bitácora'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Sí, actualizar timecodes'),
+            ),
+          ],
+        ),
+      );
+      shouldUpdateDiffering = confirm == true;
+    }
+
+    bool updatedAny = false;
+    final updatedRecords = _project.log.records.map((r) {
+      if (emptyTcRecordsToUpdate.containsKey(r.id)) {
+        final pair = emptyTcRecordsToUpdate[r.id]!;
+        updatedAny = true;
+        return r.copyWith(
+          tcIn: pair.$1,
+          tcOut: pair.$2 ?? r.tcOut,
+        );
+      } else if (shouldUpdateDiffering && differingTcRecordsToUpdate.containsKey(r.id)) {
+        final pair = differingTcRecordsToUpdate[r.id]!;
+        updatedAny = true;
+        return r.copyWith(
+          tcIn: pair.$1,
+          tcOut: pair.$2 ?? r.tcOut,
+        );
+      }
+      return r;
+    }).toList();
+
+    if (updatedAny) {
+      setState(() {
+        _project = _project.copyWith(
+          log: _project.log.copyWith(records: updatedRecords),
+        );
+        _isDirty = true;
+      });
+      await _generatePreview();
+    }
   }
 
   Widget _buildStudioMediaList() {
@@ -3446,6 +3952,7 @@ class _HomeScreenState extends State<HomeScreen>
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
+                                          _buildXmlBadge(clip, theme, isDark),
                                         ],
                                       ),
                                       const SizedBox(height: 2),
@@ -3458,6 +3965,35 @@ class _HomeScreenState extends State<HomeScreen>
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
+                                      if (clip.status == ProposalStatus.alreadyRenamed) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _getOriginalClipSubtitle(clip),
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.green.shade600,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ] else if (clip.status == ProposalStatus.ready &&
+                                          clip.proposedFileName.toLowerCase() !=
+                                              fileName.toLowerCase()) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '➜ ${clip.proposedFileName}',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600,
+                                            color: isDark
+                                                ? theme.colorScheme.primary
+                                                : Colors.green.shade700,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),
@@ -3478,6 +4014,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _buildStudioCenterInspector() {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final clip = _selectedStudioClip;
     final hasFocus = _studioInspectorFocusNode.hasFocus;
 
@@ -3532,13 +4069,7 @@ class _HomeScreenState extends State<HomeScreen>
         _isPlayableVideo(clip.originalFilePath) &&
         _studioVideoController != null;
 
-    final hasVisibleFlags =
-        _project.showMos ||
-        _project.showTf ||
-        _project.showDs ||
-        _project.showFf ||
-        _project.showGpr ||
-        _project.showDr;
+    final hasVisibleFlags = _project.showMos || _project.showTf;
 
     final detectedCamera = clip.originalFilePath != null
         ? ClipMatcherService.extractCamera(
@@ -3723,7 +4254,9 @@ class _HomeScreenState extends State<HomeScreen>
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
+              _buildStudioFileDetailsHeader(clip, theme, isDark),
+              const SizedBox(height: 6),
 
               // 2. Video Player Area (Expanded to consume all remaining vertical space)
               Expanded(
@@ -4534,46 +5067,6 @@ class _HomeScreenState extends State<HomeScreen>
                               selected: _studioIsTf,
                               onSelected: (val) {
                                 setState(() => _studioIsTf = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                          if (_project.showDs)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_ds',
-                              label: 'DS (Driving Shot)',
-                              selected: _studioIsDs,
-                              onSelected: (val) {
-                                setState(() => _studioIsDs = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                          if (_project.showFf)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_ff',
-                              label: 'FF (Free Fly)',
-                              selected: _studioIsFf,
-                              onSelected: (val) {
-                                setState(() => _studioIsFf = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                          if (_project.showGpr)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_gpr',
-                              label: 'GPR (GoPro)',
-                              selected: _studioIsGpr,
-                              onSelected: (val) {
-                                setState(() => _studioIsGpr = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                          if (_project.showDr)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_dr',
-                              label: 'DR (Drone)',
-                              selected: _studioIsDr,
-                              onSelected: (val) {
-                                setState(() => _studioIsDr = val);
                                 _onStudioSlateFieldChanged();
                               },
                             ),
@@ -6227,18 +6720,21 @@ class _HomeScreenState extends State<HomeScreen>
 
       // 1. Directory -> Media Folder
       if (Directory(path).existsSync()) {
-        setState(() {
-          _mediaFolderPath = path;
-          _manualOverrides = {};
-          _baseReport = null;
-        });
-        await _generatePreview();
+        final scannedFiles = MediaScannerService.scanDirectory(
+          path,
+          searchSubdirectories: true,
+        );
+        if (!mounted) return;
+        final result = await FolderIngestionDialog.show(
+          context: context,
+          folderPath: path,
+          project: _project,
+          scannedFiles: scannedFiles,
+        );
+        if (result == null || !mounted) return;
+
+        await _applyFolderIngestionResult(path, result);
         anyHandled = true;
-        if (mounted) {
-          _showNotification(
-            'Carpeta de medios cargada: ${p.basename(path)} (${_report?.proposals.length ?? 0} clips detectados)',
-          );
-        }
         continue;
       }
 
@@ -6260,6 +6756,9 @@ class _HomeScreenState extends State<HomeScreen>
             _baseReport = null;
           });
           await _generatePreview();
+          if (_report != null) {
+            await _checkAndSyncTimecodes(_report!);
+          }
           anyHandled = true;
           if (mounted) {
             _showNotification(
@@ -6313,6 +6812,9 @@ class _HomeScreenState extends State<HomeScreen>
             _baseReport = null;
           });
           await _generatePreview();
+          if (_report != null) {
+            await _checkAndSyncTimecodes(_report!);
+          }
           anyHandled = true;
           if (mounted) {
             _showNotification('Proyecto cargado: ${p.basename(path)}');

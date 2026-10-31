@@ -111,15 +111,25 @@ void main() {
       if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
     });
 
-    dropTarget.onDragDone?.call(DropDoneDetails(
-      files: [DropItemFile(tempDir.path)],
-      localPosition: Offset.zero,
-      globalPosition: Offset.zero,
-    ));
     await tester.runAsync(() async {
-      await Future.delayed(const Duration(milliseconds: 100));
+      dropTarget.onDragDone?.call(DropDoneDetails(
+        files: [DropItemFile(tempDir.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
     });
-    await tester.pump();
+    await tester.pumpAndSettle();
+
+    // Confirm folder ingestion dialog if presented
+    final confirmBtn = find.text('Iniciar Proyecto con estos Medios');
+    if (confirmBtn.evaluate().isNotEmpty) {
+      await tester.runAsync(() async {
+        await tester.tap(confirmBtn);
+        await Future.delayed(const Duration(milliseconds: 500));
+      });
+      await tester.pump();
+    }
 
     // Verify notification for media folder is shown
     expect(find.textContaining('Carpeta de medios cargada'), findsOneWidget);

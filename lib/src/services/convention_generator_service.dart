@@ -154,12 +154,31 @@ class ConventionGeneratorService {
     }
 
     // 3. Trailing tokens: Reel with camera, Clip index, Day, Unit
-    final finalReel = formatReelWithCamera(reel, camera);
+    final camType = project.getCameraType(camera);
+    final isDs = camType == CameraType.drivingShot;
+    final isFf = camType == CameraType.freeFly;
+    final isGpr = camType == CameraType.goPro;
+    final isDr = camType == CameraType.drone;
+
+    String finalReel;
+    if (isGpr) {
+      finalReel = 'GPR1';
+    } else if (isDr) {
+      finalReel = 'DR1';
+    } else if (isFf) {
+      finalReel = 'NFF';
+    } else {
+      finalReel = formatReelWithCamera(reel, camera);
+    }
     if (finalReel.isNotEmpty) {
       tokens.add(finalReel);
     }
 
-    tokens.add(clipIndex.toString());
+    if (isGpr) {
+      tokens.add(clipIndex.toString().padLeft(2, '0'));
+    } else {
+      tokens.add(clipIndex.toString());
+    }
 
     final day = project.log.metadata.day.trim();
     if (day.isNotEmpty) {
@@ -169,10 +188,10 @@ class ConventionGeneratorService {
       tokens.add(dayToken);
     }
 
-    final unit = project.log.metadata.unit.trim();
+    final unit = isDs ? 'DS' : project.log.metadata.unit.trim();
     if (unit.isNotEmpty) {
-      final unitToken = unit.toUpperCase().startsWith('U')
-          ? unit.toUpperCase()
+      final unitToken = (isDs || unit.toUpperCase().startsWith('U'))
+          ? (isDs ? 'DS' : unit.toUpperCase())
           : 'U$unit';
       tokens.add(unitToken);
     }

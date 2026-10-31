@@ -186,9 +186,8 @@ void main() {
       expect(find.byKey(const ValueKey('studio_flag_tf')), findsNothing);
       expect(find.byKey(const ValueKey('studio_flag_gpr')), findsNothing);
       expect(find.byKey(const ValueKey('studio_flag_dr')), findsNothing);
-
-      expect(find.byKey(const ValueKey('studio_flag_ds')), findsOneWidget);
-      expect(find.byKey(const ValueKey('studio_flag_ff')), findsOneWidget);
+      expect(find.byKey(const ValueKey('studio_flag_ds')), findsNothing);
+      expect(find.byKey(const ValueKey('studio_flag_ff')), findsNothing);
     });
 
     testWidgets('Test 5: proposed banner sits above video player and updates reactively live', (tester) async {

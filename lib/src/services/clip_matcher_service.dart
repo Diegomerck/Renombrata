@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:path/path.dart' as p;
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/models/dry_run_report.dart';
@@ -16,10 +17,15 @@ class ClipMatcherService {
   /// - "C0001.MP4" -> null
   static String? extractReel(String filename) {
     final clean = p.basename(filename);
-    final match = RegExp(r'^([A-Za-z]\d{1,4})_?[cC]\d+', caseSensitive: false).firstMatch(clean) ??
-        RegExp(r'^([A-Za-z]\d{1,4})_', caseSensitive: false).firstMatch(clean);
+    final match = RegExp(r'^([A-Za-z])_?(\d{1,4})_?[cC]\d+', caseSensitive: false).firstMatch(clean) ??
+        RegExp(r'^([A-Za-z])_?(\d{1,4})_', caseSensitive: false).firstMatch(clean);
     if (match != null) {
-      return match.group(1)!.toUpperCase();
+      final cam = match.group(1)!.toUpperCase();
+      final numStr = match.group(2)!;
+      final parsed = int.tryParse(numStr);
+      final padLen = numStr.length == 4 ? 4 : 3;
+      final formattedNum = parsed != null ? parsed.toString().padLeft(padLen, '0') : numStr;
+      return '$cam$formattedNum';
     }
     return null;
   }
@@ -27,11 +33,12 @@ class ClipMatcherService {
   /// Extracts the camera letter from standard clip filenames.
   /// Examples:
   /// - "A001C002.MP4" -> "A"
+  /// - "A_0001C001...MXF" -> "A"
   /// - "B002C015.MOV" -> "B"
   /// - "C0001.MP4" -> fallback ("A")
   static String extractCamera(String filename, {String fallback = 'A'}) {
     final clean = p.basename(filename);
-    final match = RegExp(r'^([A-Za-z])\d{1,4}[cC]\d+').firstMatch(clean);
+    final match = RegExp(r'^([A-Za-z])_?\d{1,4}_?[cC]\d+', caseSensitive: false).firstMatch(clean);
     if (match != null) {
       return match.group(1)!.toUpperCase();
     }
@@ -132,13 +139,58 @@ class ClipMatcherService {
 
   static String extractClipNumber(String filename) {
     String baseName = p.basenameWithoutExtension(filename);
-    
-    final priorityMatch = RegExp(r'[cC](\d{1,4})').firstMatch(baseName);
-    if (priorityMatch != null) {
-      int num = int.parse(priorityMatch.group(1)!);
+
+    // 1. Check standard camera clip pattern: e.g. "A001C001", "A_0001C001", "A001_C001", "B002C015"
+    final camClipMatch =
+        RegExp(r'[A-Za-z]_?\d{1,4}_?[cC](\d{1,4})', caseSensitive: false).firstMatch(baseName);
+    if (camClipMatch != null) {
+      int num = int.parse(camClipMatch.group(1)!);
       return num.toString().padLeft(3, '0');
     }
 
+    // e.g. "_C001_", "C0001", "CLIP_C002"
+    final cMatch =
+        RegExp(r'(?:^|[_-\s])[cC](\d{1,4})(?:[_-\s.]|$)').firstMatch(baseName);
+    if (cMatch != null) {
+      int num = int.parse(cMatch.group(1)!);
+      return num.toString().padLeft(3, '0');
+    }
+
+    // e.g. "001", "1", "12"
+    final pureNumMatch = RegExp(r'^(\d{1,4})$').firstMatch(baseName);
+    if (pureNumMatch != null) {
+      int num = int.parse(pureNumMatch.group(1)!);
+      return num.toString().padLeft(3, '0');
+    }
+
+    // 2. Check if this is a multi-token convention string (e.g. MNBOENC_080626_17_11_T1_A001_1_D1_U3)
+    final tokens = baseName.split('_');
+    if (tokens.length >= 4) {
+      // Find reel token (e.g. "A001", "B002", "001")
+      final reelIdx =
+          tokens.indexWhere((t) => RegExp(r'^[A-Za-z]?\d{3,4}$').hasMatch(t));
+      if (reelIdx != -1) {
+        // Look at subsequent tokens for the clip index (a pure number not prefixed by U, D, T, etc.)
+        for (int i = reelIdx + 1; i < tokens.length; i++) {
+          final token = tokens[i];
+          if (RegExp(r'^[Uu]\d+$').hasMatch(token) ||
+              token.toUpperCase() == 'DS' ||
+              RegExp(r'^[Dd]\d+$').hasMatch(token) ||
+              RegExp(r'^[Tt][Ff]?\d+$').hasMatch(token) ||
+              RegExp(r'^\d{6,8}$').hasMatch(token)) {
+            continue;
+          }
+          final parsed = int.tryParse(token);
+          if (parsed != null && parsed > 0 && parsed <= 9999) {
+            return parsed.toString().padLeft(3, '0');
+          }
+        }
+      }
+      // If no valid clip index token found in a multi-token string, do NOT fallback to last number (e.g. U3)
+      return '';
+    }
+
+    // 3. Fallback for simple short filenames (fewer than 4 tokens, e.g. "CLIP_001")
     final fallbackMatches = RegExp(r'\d+').allMatches(baseName);
     if (fallbackMatches.isNotEmpty) {
       int num = int.parse(fallbackMatches.last.group(0)!);
@@ -178,31 +230,146 @@ class ClipMatcherService {
     return null;
   }
 
+  /// Extracts the camera-clip prefix (e.g. "A001C001", "A_0001C001", "B002C015")
+  static String? extractCameraClipPrefix(String filename) {
+    final clean = p.basenameWithoutExtension(filename);
+    final match = RegExp(r'^([A-Za-z]_?\d{1,4}_?[cC]\d{1,4})', caseSensitive: false).firstMatch(clean);
+    if (match != null) {
+      return match.group(1)!.toUpperCase().replaceAll('_', '');
+    }
+    final cOnlyMatch = RegExp(r'^([cC]\d{1,4})', caseSensitive: false).firstMatch(clean);
+    if (cOnlyMatch != null) {
+      return cOnlyMatch.group(1)!.toUpperCase().replaceAll('_', '');
+    }
+    return null;
+  }
+
   /// Checks if [xml] is a Sony M01 metadata sidecar for [video].
   static bool isM01Companion(ScannedFile video, ScannedFile xml) {
     if (!xml.isXml) return false;
     final videoStem = p.basenameWithoutExtension(video.basename).toUpperCase();
     final xmlStem = p.basenameWithoutExtension(xml.basename).toUpperCase();
-    return xmlStem == '${videoStem}M01';
+    return xmlStem == '${videoStem}M01' || videoStem == '${xmlStem}M01';
   }
 
   /// Finds companion XML for a video.
-  /// If [pairM01Sidecars] is true, also pairs Sony M01 sidecars (stem + 'M01').
+  /// Matches by:
+  /// a) Exact basename without extension (case-insensitive)
+  /// b) Sony M01 suffix: xml stem == '${videoStem}M01' or videoStem == '${xmlStem}M01'
+  /// c) Subdirectory sidecars (e.g. video in 'CLIP/' and xml in 'MEDIAMETA/' with the same stem)
+  /// d) Stripped reel/clip stems sharing the same camera-clip prefix (e.g. 'A001C001' or 'A_0001C001')
   static ScannedFile? findCompanionXml(
     ScannedFile video,
     List<ScannedFile> xmlFiles, {
     bool pairM01Sidecars = true,
   }) {
+    if (xmlFiles.isEmpty) return null;
+
     final videoStem = p.basenameWithoutExtension(video.basename).toUpperCase();
-    for (var xml in xmlFiles) {
+    final videoDir = p.dirname(video.path).toLowerCase();
+    final videoParentDir = p.dirname(videoDir).toLowerCase();
+    final videoPrefix = extractCameraClipPrefix(video.basename);
+
+    // Pass 1: Exact basename match without extension (case-insensitive)
+    ScannedFile? exactSameDir;
+    ScannedFile? exactSiblingDir;
+    ScannedFile? exactAny;
+
+    for (final xml in xmlFiles) {
       final xmlStem = p.basenameWithoutExtension(xml.basename).toUpperCase();
       if (xmlStem == videoStem) {
-        return xml;
-      }
-      if (pairM01Sidecars && xmlStem == '${videoStem}M01') {
-        return xml;
+        final xmlDir = p.dirname(xml.path).toLowerCase();
+        final xmlParentDir = p.dirname(xmlDir).toLowerCase();
+        if (xmlDir == videoDir) {
+          exactSameDir ??= xml;
+        } else if (xmlParentDir == videoParentDir) {
+          exactSiblingDir ??= xml;
+        } else {
+          exactAny ??= xml;
+        }
       }
     }
+    if (exactSameDir != null) return exactSameDir;
+    if (exactSiblingDir != null) return exactSiblingDir;
+    if (exactAny != null) return exactAny;
+
+    // Pass 2: Sony M01 suffix
+    if (pairM01Sidecars) {
+      ScannedFile? m01SameDir;
+      ScannedFile? m01SiblingDir;
+      ScannedFile? m01Any;
+
+      for (final xml in xmlFiles) {
+        final xmlStem = p.basenameWithoutExtension(xml.basename).toUpperCase();
+        if (xmlStem == '${videoStem}M01' || videoStem == '${xmlStem}M01') {
+          final xmlDir = p.dirname(xml.path).toLowerCase();
+          final xmlParentDir = p.dirname(xmlDir).toLowerCase();
+          if (xmlDir == videoDir) {
+            m01SameDir ??= xml;
+          } else if (xmlParentDir == videoParentDir) {
+            m01SiblingDir ??= xml;
+          } else {
+            m01Any ??= xml;
+          }
+        }
+      }
+      if (m01SameDir != null) return m01SameDir;
+      if (m01SiblingDir != null) return m01SiblingDir;
+      if (m01Any != null) return m01Any;
+    }
+
+    // Pass 3 & 4: Stripped camera-clip prefix matching
+    if (videoPrefix != null) {
+      ScannedFile? prefixSameDir;
+      ScannedFile? prefixSiblingDir;
+      ScannedFile? prefixAny;
+
+      for (final xml in xmlFiles) {
+        final xmlStem = p.basenameWithoutExtension(xml.basename).toUpperCase();
+        if (!pairM01Sidecars && xmlStem.endsWith('M01')) {
+          continue;
+        }
+        final xmlPrefix = extractCameraClipPrefix(xml.basename);
+        if (xmlPrefix != null && xmlPrefix == videoPrefix) {
+          final xmlDir = p.dirname(xml.path).toLowerCase();
+          final xmlParentDir = p.dirname(xmlDir).toLowerCase();
+          if (xmlDir == videoDir) {
+            prefixSameDir ??= xml;
+          } else if (xmlParentDir == videoParentDir) {
+            prefixSiblingDir ??= xml;
+          } else {
+            prefixAny ??= xml;
+          }
+        }
+      }
+      if (prefixSameDir != null) return prefixSameDir;
+      if (prefixSiblingDir != null) return prefixSiblingDir;
+      if (prefixAny != null) return prefixAny;
+    }
+
+    // Pass 5: Shared reel and clip number
+    final videoReel = extractReel(video.basename);
+    final videoClipNum = normalizeClipNumber(extractClipNumber(video.basename));
+    if (videoClipNum.isNotEmpty) {
+      for (final xml in xmlFiles) {
+        final xmlStem = p.basenameWithoutExtension(xml.basename).toUpperCase();
+        if (!pairM01Sidecars && xmlStem.endsWith('M01')) {
+          continue;
+        }
+        final xmlReel = extractReel(xml.basename);
+        final xmlClipNum = normalizeClipNumber(extractClipNumber(xml.basename));
+        if (xmlClipNum == videoClipNum) {
+          if (videoReel != null && xmlReel != null) {
+            if (RenameProposal.isReelMatched(videoReel, xmlReel)) {
+              return xml;
+            }
+          } else if (videoReel == null && xmlReel == null) {
+            return xml;
+          }
+        }
+      }
+    }
+
     return null;
   }
 
@@ -215,8 +382,19 @@ class ClipMatcherService {
     Map<String, String?> manualOverrides = const {},
     Map<String, String>? xmlContentsForTesting,
     bool pairM01Sidecars = true,
+    Map<String, CameraType> cameraTypes = const {},
   }) {
     if (targetCamera.toUpperCase() == 'ALL') {
+      final originalPathByRenamedBasename = <String, String>{};
+      for (var e in renameHistory) {
+        final renamedPath = e['renamedPath'] as String?;
+        final originalPath = e['originalPath'] as String?;
+        if (renamedPath != null && originalPath != null) {
+          originalPathByRenamedBasename[p.basename(renamedPath).toLowerCase()] =
+              originalPath;
+        }
+      }
+
       final camerasSet = <String>{};
       for (final r in log.records) {
         for (final c in r.cameras) {
@@ -226,7 +404,12 @@ class ClipMatcherService {
         }
       }
       for (final f in scannedFiles) {
-        camerasSet.add(extractCamera(f.basename));
+        final origPath =
+            originalPathByRenamedBasename[f.basename.toLowerCase()];
+        final camToUse = origPath != null
+            ? extractCamera(p.basename(origPath))
+            : extractCamera(f.basename);
+        camerasSet.add(camToUse);
       }
       if (camerasSet.isEmpty) {
         camerasSet.add('A');
@@ -238,7 +421,11 @@ class ClipMatcherService {
       for (final cam in sortedCameras) {
         final camFiles = scannedFiles.where((f) {
           if (f.isXml && claimedXml.contains(f.path)) return false;
-          final fileCam = extractCamera(f.basename, fallback: cam);
+          final origPath =
+              originalPathByRenamedBasename[f.basename.toLowerCase()];
+          final fileCam = origPath != null
+              ? extractCamera(p.basename(origPath), fallback: cam)
+              : extractCamera(f.basename, fallback: cam);
           return fileCam == cam;
         }).toList();
 
@@ -251,6 +438,7 @@ class ClipMatcherService {
           manualOverrides: manualOverrides,
           xmlContentsForTesting: xmlContentsForTesting,
           pairM01Sidecars: pairM01Sidecars,
+          cameraTypes: cameraTypes,
         );
 
         for (final pItem in rep.proposals) {
@@ -299,6 +487,16 @@ class ClipMatcherService {
       return renamedPath != null ? p.basename(renamedPath) : '';
     }).where((s) => s.isNotEmpty).toSet();
 
+    final originalPathByRenamedBasename = <String, String>{};
+    for (var e in renameHistory) {
+      final renamedPath = e['renamedPath'] as String?;
+      final originalPath = e['originalPath'] as String?;
+      if (renamedPath != null && originalPath != null) {
+        originalPathByRenamedBasename[p.basename(renamedPath).toLowerCase()] =
+            originalPath;
+      }
+    }
+
     Map<String, ShotRecord> expectedClips = {};
     for (var record in log.records) {
       for (var cam in record.cameras) {
@@ -311,7 +509,87 @@ class ClipMatcherService {
       }
     }
 
-    // Process already renamed files based on proposed names or history
+    // Process already renamed files based on renameHistory
+    for (var video in List<ScannedFile>.from(videoFiles)) {
+      final vBaseLower = video.basename.toLowerCase();
+      final origPath = originalPathByRenamedBasename[vBaseLower];
+      final isHist = origPath != null;
+
+      if (isHist || renamedBasenames.contains(video.basename)) {
+        final origBasename = origPath != null ? p.basename(origPath) : null;
+        final origReel = origBasename != null
+            ? extractReel(origBasename)
+            : extractReel(video.basename);
+        final origClipNum = origBasename != null
+            ? extractClipNumber(origBasename)
+            : extractClipNumber(video.basename);
+        final normOrigClip = normalizeClipNumber(origClipNum);
+
+        // Find matching ShotRecord from log.records
+        ShotRecord? matchingRecord;
+        for (final r in log.records) {
+          final hasCam = r.cameras.any((c) {
+            final cNorm = normalizeClipNumber(c.clipName);
+            if (cNorm.isEmpty || cNorm != normOrigClip) return false;
+            if (targetCamera.toUpperCase() != 'ALL' &&
+                c.cameraName.toUpperCase() != targetCamera.toUpperCase()) {
+              return false;
+            }
+            return true;
+          });
+          if (hasCam) {
+            if (origReel != null && r.reel.trim().isNotEmpty) {
+              final rReelNum = r.reel.replaceAll(RegExp(r'^[A-Z]'), '');
+              final origReelNum = origReel.replaceAll(RegExp(r'^[A-Z]'), '');
+              if (r.reel.toUpperCase() == origReel.toUpperCase() ||
+                  rReelNum == origReelNum) {
+                matchingRecord = r;
+                break;
+              }
+            } else {
+              matchingRecord = r;
+              break;
+            }
+          }
+        }
+
+        if (matchingRecord != null) {
+          expectedClips.removeWhere((k, r) => r.id == matchingRecord!.id);
+        }
+
+        var companion = findCompanionXml(video, xmlFiles, pairM01Sidecars: pairM01Sidecars);
+        final sidecar = _extractSidecar(companion, xmlContentsForTesting);
+
+        proposals.add(RenameProposal(
+          originalFilePath: video.path,
+          proposedFileName: video.basename,
+          associatedRecord: matchingRecord,
+          status: ProposalStatus.alreadyRenamed,
+          fileReel: origReel,
+          fileTcIn: sidecar?.tcIn,
+          fileTcOut: sidecar?.tcOut,
+          companionFilePath: companion?.path,
+        ));
+
+        if (companion != null) {
+          proposals.add(RenameProposal(
+            originalFilePath: companion.path,
+            proposedFileName: companion.basename,
+            associatedRecord: matchingRecord,
+            status: ProposalStatus.alreadyRenamed,
+            isCompanionFile: true,
+            fileReel: origReel,
+            fileTcIn: sidecar?.tcIn,
+            fileTcOut: sidecar?.tcOut,
+            companionFilePath: video.path,
+          ));
+          xmlFiles.remove(companion);
+        }
+        videoFiles.remove(video);
+      }
+    }
+
+    // Process already renamed files based on proposed convention names
     expectedClips.removeWhere((clipName, record) {
       String proposedBase = ConventionNameGenerator.generate(
         nomenclature: log.metadata.nomenclature,
@@ -324,25 +602,28 @@ class ClipMatcherService {
         unit: log.metadata.unit,
         activeCamera: targetCamera,
         reelOverride: reelOverride,
+        cameraType: cameraTypes[targetCamera.toUpperCase()] ?? CameraType.regular,
       );
 
       var alreadyRenamedVideoList = videoFiles.where((v) => 
-        p.basenameWithoutExtension(v.basename).toUpperCase() == proposedBase.toUpperCase() ||
-        renamedBasenames.contains(v.basename)
+        p.basenameWithoutExtension(v.basename).toUpperCase() == proposedBase.toUpperCase()
       ).toList();
 
       if (alreadyRenamedVideoList.isNotEmpty) {
         var video = alreadyRenamedVideoList.first;
         var companion = findCompanionXml(video, xmlFiles, pairM01Sidecars: pairM01Sidecars);
         final sidecar = _extractSidecar(companion, xmlContentsForTesting);
+        final fileReel = extractReel(video.basename) ?? record.reel;
 
         proposals.add(RenameProposal(
           originalFilePath: video.path,
           proposedFileName: video.basename,
           associatedRecord: record,
           status: ProposalStatus.alreadyRenamed,
+          fileReel: fileReel,
           fileTcIn: sidecar?.tcIn,
           fileTcOut: sidecar?.tcOut,
+          companionFilePath: companion?.path,
         ));
         
         if (companion != null) {
@@ -352,8 +633,10 @@ class ClipMatcherService {
             associatedRecord: record,
             status: ProposalStatus.alreadyRenamed,
             isCompanionFile: true,
+            fileReel: fileReel,
             fileTcIn: sidecar?.tcIn,
             fileTcOut: sidecar?.tcOut,
+            companionFilePath: video.path,
           ));
           xmlFiles.remove(companion);
         }
@@ -386,7 +669,21 @@ class ClipMatcherService {
             fileTcIn: sidecar?.tcIn,
             fileTcOut: sidecar?.tcOut,
             fileReel: fileReel,
+            companionFilePath: companion?.path,
           ));
+          if (companion != null) {
+            proposals.add(RenameProposal(
+              originalFilePath: companion.path,
+              proposedFileName: companion.basename,
+              status: ProposalStatus.unmatchedClip,
+              isCompanionFile: true,
+              fileTcIn: sidecar?.tcIn,
+              fileTcOut: sidecar?.tcOut,
+              fileReel: fileReel,
+              companionFilePath: scanned.path,
+            ));
+            xmlFiles.remove(companion);
+          }
         } else {
           final record = log.records.where((r) => r.id == effectiveRecordId).firstOrNull;
           if (record != null || isPrimary || isAlt) {
@@ -403,6 +700,7 @@ class ClipMatcherService {
                 unit: log.metadata.unit,
                 activeCamera: targetCamera,
                 reelOverride: reelOverride,
+                cameraType: cameraTypes[targetCamera.toUpperCase()] ?? CameraType.regular,
               );
               if (isAlt) {
                 proposedBase = '${proposedBase}_ALT';
@@ -428,6 +726,7 @@ class ClipMatcherService {
               fileTcIn: sidecar?.tcIn,
               fileTcOut: sidecar?.tcOut,
               fileReel: fileReel,
+              companionFilePath: companion?.path,
             ));
 
             if (companion != null) {
@@ -443,6 +742,7 @@ class ClipMatcherService {
                 fileTcIn: sidecar?.tcIn,
                 fileTcOut: sidecar?.tcOut,
                 fileReel: fileReel,
+                companionFilePath: scanned.path,
               ));
               xmlFiles.remove(companion);
             }
@@ -456,7 +756,21 @@ class ClipMatcherService {
               fileTcIn: sidecar?.tcIn,
               fileTcOut: sidecar?.tcOut,
               fileReel: fileReel,
+              companionFilePath: companion?.path,
             ));
+            if (companion != null) {
+              proposals.add(RenameProposal(
+                originalFilePath: companion.path,
+                proposedFileName: companion.basename,
+                status: ProposalStatus.unmatchedClip,
+                isCompanionFile: true,
+                fileTcIn: sidecar?.tcIn,
+                fileTcOut: sidecar?.tcOut,
+                fileReel: fileReel,
+                companionFilePath: scanned.path,
+              ));
+              xmlFiles.remove(companion);
+            }
           }
         }
       }
@@ -467,12 +781,25 @@ class ClipMatcherService {
       final fileReel = extractReel(video.basename);
       if (renamedBasenames.contains(video.basename)) {
         // It's in history but didn't match any expected clip (log changed?)
+        var companion = findCompanionXml(video, xmlFiles, pairM01Sidecars: pairM01Sidecars);
         proposals.add(RenameProposal(
           originalFilePath: video.path,
           proposedFileName: video.basename,
           status: ProposalStatus.alreadyRenamed,
           fileReel: fileReel,
+          companionFilePath: companion?.path,
         ));
+        if (companion != null) {
+          proposals.add(RenameProposal(
+            originalFilePath: companion.path,
+            proposedFileName: companion.basename,
+            status: ProposalStatus.alreadyRenamed,
+            isCompanionFile: true,
+            fileReel: fileReel,
+            companionFilePath: video.path,
+          ));
+          xmlFiles.remove(companion);
+        }
         continue;
       }
 
@@ -492,7 +819,21 @@ class ClipMatcherService {
           fileTcIn: sidecar?.tcIn,
           fileTcOut: sidecar?.tcOut,
           fileReel: fileReel,
+          companionFilePath: companion?.path,
         ));
+        if (companion != null) {
+          proposals.add(RenameProposal(
+            originalFilePath: companion.path,
+            proposedFileName: companion.basename,
+            status: ProposalStatus.unmatchedClip,
+            isCompanionFile: true,
+            fileTcIn: sidecar?.tcIn,
+            fileTcOut: sidecar?.tcOut,
+            fileReel: fileReel,
+            companionFilePath: video.path,
+          ));
+          xmlFiles.remove(companion);
+        }
       }
     }
 
@@ -543,6 +884,7 @@ class ClipMatcherService {
         unit: log.metadata.unit,
         activeCamera: targetCamera,
         reelOverride: reelOverride,
+        cameraType: cameraTypes[targetCamera.toUpperCase()] ?? CameraType.regular,
       );
 
       if (matchedVideos == null || matchedVideos.isEmpty) {
@@ -567,6 +909,7 @@ class ClipMatcherService {
           fileTcIn: sidecar?.tcIn,
           fileTcOut: sidecar?.tcOut,
           fileReel: fileReel,
+          companionFilePath: companion?.path,
         );
 
         final isOverridden = manualOverrides.containsKey(video.path);
@@ -589,6 +932,7 @@ class ClipMatcherService {
             fileTcIn: sidecar?.tcIn,
             fileTcOut: sidecar?.tcOut,
             fileReel: fileReel,
+            companionFilePath: video.path,
           ));
           xmlFiles.remove(companion);
         }
@@ -607,6 +951,7 @@ class ClipMatcherService {
             fileTcIn: sidecar?.tcIn,
             fileTcOut: sidecar?.tcOut,
             fileReel: fileReel,
+            companionFilePath: companion?.path,
           ));
           if (companion != null) {
             String xmlExt = companion.extension.toUpperCase();
@@ -621,6 +966,7 @@ class ClipMatcherService {
               fileTcIn: sidecar?.tcIn,
               fileTcOut: sidecar?.tcOut,
               fileReel: fileReel,
+              companionFilePath: video.path,
             ));
             xmlFiles.remove(companion);
           }
@@ -642,7 +988,21 @@ class ClipMatcherService {
           fileTcIn: sidecar?.tcIn,
           fileTcOut: sidecar?.tcOut,
           fileReel: fileReel,
+          companionFilePath: companion?.path,
         ));
+        if (companion != null) {
+          proposals.add(RenameProposal(
+            originalFilePath: companion.path,
+            proposedFileName: companion.basename,
+            status: isConflict ? ProposalStatus.conflict : ProposalStatus.unmatchedClip,
+            isCompanionFile: true,
+            fileTcIn: sidecar?.tcIn,
+            fileTcOut: sidecar?.tcOut,
+            fileReel: fileReel,
+            companionFilePath: video.path,
+          ));
+          xmlFiles.remove(companion);
+        }
       }
     });
 
@@ -664,6 +1024,7 @@ class ClipMatcherService {
     Map<String, String>? xmlContentsForTesting,
     Future<SidecarMetadata?> Function(String filePath)? probeFunction,
     bool pairM01Sidecars = true,
+    Map<String, CameraType> cameraTypes = const {},
   }) async {
     final report = matchFiles(
       scannedFiles: scannedFiles,
@@ -674,6 +1035,7 @@ class ClipMatcherService {
       manualOverrides: manualOverrides,
       xmlContentsForTesting: xmlContentsForTesting,
       pairM01Sidecars: pairM01Sidecars,
+      cameraTypes: cameraTypes,
     );
 
     final updatedProposals = <RenameProposal>[];

@@ -31,7 +31,7 @@ class SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<SettingsDialog> {
   late AppSettings _settings;
-  late List<String> _tempCameras;
+  late List<CameraConfig> _tempCameras;
   late bool _tempShowChapter;
   late bool _tempShowPlane;
   late bool _tempShowMos;
@@ -67,7 +67,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   void _initProjectState() {
     if (widget.project != null) {
-      _tempCameras = List<String>.from(widget.project!.cameraNames);
+      _tempCameras = List<CameraConfig>.from(widget.project!.cameras);
       _tempShowChapter = widget.project!.showChapter;
       _tempShowPlane = widget.project!.showPlane;
       _tempShowMos = widget.project!.showMos;
@@ -80,7 +80,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _tempBitacoraElementOrder = List<String>.from(widget.project!.bitacoraElementOrder);
       _tempConventionNameOrder = List<String>.from(widget.project!.conventionNameOrder);
     } else {
-      _tempCameras = ['A'];
+      _tempCameras = [const CameraConfig(name: 'A', type: CameraType.regular)];
       _tempShowChapter = false;
       _tempShowPlane = false;
       _tempShowMos = false;
@@ -106,14 +106,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
   void _syncProjectChanges() {
     if (widget.project == null || widget.onProjectChanged == null) return;
 
-    final cleanCameras = _tempCameras.map((c) => c.trim()).where((c) => c.isNotEmpty).toList();
-    final effectiveCameras = cleanCameras.isEmpty ? ['A'] : cleanCameras;
+    final cleanCameras = _tempCameras
+        .map((c) => c.copyWith(name: c.name.trim()))
+        .where((c) => c.name.isNotEmpty)
+        .toList();
+    final effectiveCameras = cleanCameras.isEmpty
+        ? const [CameraConfig(name: 'A', type: CameraType.regular)]
+        : cleanCameras;
 
     final updatedRecords = widget.project!.log.records.map((record) {
       final updatedCameras = List<CameraTakeRecord>.from(record.cameras);
       for (var cam in effectiveCameras) {
-        if (!updatedCameras.any((c) => c.cameraName == cam)) {
-          updatedCameras.add(CameraTakeRecord(cameraName: cam, clipName: ''));
+        if (!updatedCameras.any((c) => c.cameraName.toUpperCase() == cam.name.toUpperCase())) {
+          updatedCameras.add(CameraTakeRecord(cameraName: cam.name, clipName: ''));
         }
       }
       return record.copyWith(cameras: updatedCameras);
@@ -121,7 +126,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
     final updatedLog = widget.project!.log.copyWith(records: updatedRecords);
     final updatedProject = widget.project!.copyWith(
-      cameraNames: effectiveCameras,
+      cameras: effectiveCameras,
+      cameraNames: effectiveCameras.map((c) => c.name).toList(),
       showChapter: _tempShowChapter,
       showPlane: _tempShowPlane,
       showMos: _tempShowMos,
@@ -748,11 +754,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.add, size: 16),
-                label: const Text('Agregar cámara'),
+                label: const Text('Añadir Cámara'),
                 onPressed: () {
                   setState(() {
-                    final nextLetter = String.fromCharCode('A'.codeUnitAt(0) + _tempCameras.length);
-                    _tempCameras.add(_tempCameras.length < 26 ? nextLetter : 'CAM ${_tempCameras.length + 1}');
+                    final nextLetter = _tempCameras.length < 26
+                        ? String.fromCharCode('A'.codeUnitAt(0) + _tempCameras.length)
+                        : 'CAM ${_tempCameras.length + 1}';
+                    _tempCameras.add(CameraConfig(name: nextLetter, type: CameraType.regular));
                   });
                   _syncProjectChanges();
                 },
@@ -760,42 +768,97 @@ class _SettingsDialogState extends State<SettingsDialog> {
             ],
           ),
           const SizedBox(height: 8),
-          for (int i = 0; i < _tempCameras.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8.0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      key: ValueKey('cam_${i}_${_tempCameras.length}'),
-                      initialValue: _tempCameras[i],
-                      decoration: InputDecoration(
-                        labelText: 'Cámara ${i + 1}',
-                        isDense: true,
-                        border: const OutlineInputBorder(),
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            itemCount: _tempCameras.length,
+            onReorder: (oldIndex, newIndex) {
+              setState(() {
+                if (newIndex > oldIndex) newIndex -= 1;
+                final item = _tempCameras.removeAt(oldIndex);
+                _tempCameras.insert(newIndex, item);
+              });
+              _syncProjectChanges();
+            },
+            itemBuilder: (context, i) {
+              final cam = _tempCameras[i];
+              return Padding(
+                key: ValueKey('cam_row_${i}_${_tempCameras.length}'),
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Row(
+                  children: [
+                    ReorderableDragStartListener(
+                      index: i,
+                      child: const MouseRegion(
+                        cursor: SystemMouseCursors.grab,
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6.0),
+                          child: Icon(Icons.drag_handle, size: 20),
+                        ),
                       ),
-                      onChanged: (val) {
-                        _tempCameras[i] = val;
-                        _syncProjectChanges();
-                      },
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                    tooltip: 'Eliminar cámara',
-                    onPressed: _tempCameras.length <= 1
-                        ? null
-                        : () {
+                    SizedBox(
+                      width: 100,
+                      child: TextFormField(
+                        key: ValueKey('cam_${i}_${_tempCameras.length}'),
+                        initialValue: cam.name,
+                        decoration: InputDecoration(
+                          labelText: 'Cámara ${i + 1}',
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (val) {
+                          _tempCameras[i] = _tempCameras[i].copyWith(name: val);
+                          _syncProjectChanges();
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<CameraType>(
+                        key: ValueKey('cam_type_${i}_${_tempCameras.length}'),
+                        value: cam.type,
+                        isDense: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Tipo de Cámara',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: CameraType.values.map((type) {
+                          return DropdownMenuItem<CameraType>(
+                            value: type,
+                            child: Text(type.label, overflow: TextOverflow.ellipsis),
+                          );
+                        }).toList(),
+                        onChanged: (newType) {
+                          if (newType != null) {
                             setState(() {
-                              _tempCameras.removeAt(i);
+                              _tempCameras[i] = _tempCameras[i].copyWith(type: newType);
                             });
                             _syncProjectChanges();
-                          },
-                  ),
-                ],
-              ),
-            ),
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                      tooltip: 'Eliminar cámara',
+                      onPressed: _tempCameras.length <= 1
+                          ? null
+                          : () {
+                              setState(() {
+                                _tempCameras.removeAt(i);
+                              });
+                              _syncProjectChanges();
+                            },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ],
       ),
     );

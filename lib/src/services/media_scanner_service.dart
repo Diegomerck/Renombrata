@@ -7,12 +7,14 @@ class ScannedFile {
   final String extension;
   final bool isVideo;
   final bool isXml;
+  final bool isAudio;
 
   ScannedFile(this.path)
       : basename = p.basename(path),
         extension = p.extension(path).toLowerCase(),
         isVideo = ['.mp4', '.mov', '.mxf'].contains(p.extension(path).toLowerCase()),
-        isXml = p.extension(path).toLowerCase() == '.xml';
+        isXml = p.extension(path).toLowerCase() == '.xml',
+        isAudio = ['.wav', '.aif', '.aiff', '.mp3', '.m4a', '.aac'].contains(p.extension(path).toLowerCase());
 }
 
 class MediaScannerService {
@@ -21,21 +23,22 @@ class MediaScannerService {
     if (!dir.existsSync()) return [];
 
     List<File> allFiles = [];
-    final entities = dir.listSync(recursive: false, followLinks: false);
-    
-    for (var entity in entities) {
-      if (entity is File) {
-        allFiles.add(entity);
-      } else if (entity is Directory && searchSubdirectories) {
-        // 1-level depth
-        final subEntities = entity.listSync(recursive: false, followLinks: false);
-        allFiles.addAll(subEntities.whereType<File>());
-      }
+    try {
+      final entities = dir.listSync(
+        recursive: searchSubdirectories,
+        followLinks: false,
+      );
+      allFiles.addAll(entities.whereType<File>());
+    } catch (_) {
+      try {
+        final entities = dir.listSync(recursive: false, followLinks: false);
+        allFiles.addAll(entities.whereType<File>());
+      } catch (_) {}
     }
 
     return allFiles
         .map((f) => ScannedFile(f.path))
-        .where((f) => f.isVideo || f.isXml)
+        .where((f) => f.isVideo || f.isXml || f.isAudio)
         .toList();
   }
 

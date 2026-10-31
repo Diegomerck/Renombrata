@@ -46,6 +46,15 @@ void main() {
       expect(TimecodeUtils.normalize('09:05:15', '24'), '09:05:15:00');
     });
 
+    test('normalizes timecodes without frames by appending :00 frames', () {
+      expect(TimecodeUtils.normalize('100033', '24'), '10:00:33:00');
+      expect(TimecodeUtils.normalize('10:00:33', '24'), '10:00:33:00');
+      expect(TimecodeUtils.normalize('10:00', '24'), '10:00:00:00');
+      expect(TimecodeUtils.normalize('1000', '24'), '10:00:00:00');
+      expect(TimecodeUtils.normalize('10', '24'), '10:00:00:00');
+      expect(TimecodeUtils.normalize('10003312', '24'), '10:00:33:12');
+    });
+
     test('withZeroFrames zeroes out frame digits', () {
       expect(TimecodeUtils.withZeroFrames('13:00:09:14'), '13:00:09:00');
       expect(TimecodeUtils.withZeroFrames('01:02:03:23'), '01:02:03:00');

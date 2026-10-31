@@ -18,6 +18,7 @@ class RenameProposal {
   final String? fileTcIn;
   final String? fileTcOut;
   final String? fileReel;
+  final String? companionFilePath;
 
   RenameProposal({
     this.originalFilePath,
@@ -28,6 +29,7 @@ class RenameProposal {
     this.fileTcIn,
     this.fileTcOut,
     this.fileReel,
+    this.companionFilePath,
   });
 
   static double? timecodeToSeconds(String? tc, [double fps = 24.0]) {
@@ -128,6 +130,7 @@ class RenameProposal {
     String? fileTcIn,
     String? fileTcOut,
     String? fileReel,
+    String? companionFilePath,
   }) {
     return RenameProposal(
       originalFilePath: originalFilePath ?? this.originalFilePath,
@@ -138,6 +141,7 @@ class RenameProposal {
       fileTcIn: fileTcIn ?? this.fileTcIn,
       fileTcOut: fileTcOut ?? this.fileTcOut,
       fileReel: fileReel ?? this.fileReel,
+      companionFilePath: companionFilePath ?? this.companionFilePath,
     );
   }
 }

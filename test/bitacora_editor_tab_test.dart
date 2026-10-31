@@ -547,7 +547,7 @@ void main() {
       expect(currentProject.log.records[1].take, '2');
     });
 
-    testWidgets('renders DS, FF, GPR checkboxes in Tier 2 and toggling updates record', (tester) async {
+    testWidgets('renders MOS and TF checkboxes in Tier 2 and toggling updates record', (tester) async {
       tester.view.physicalSize = const Size(1920, 1080);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -563,68 +563,7 @@ void main() {
         defaultReel: '001',
         activeCamera: 'A',
         cameraNames: ['A'],
-        showDs: true,
-        showFf: true,
-        showGpr: true,
-      );
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: StatefulBuilder(
-              builder: (context, setState) {
-                return BitacoraEditorTab(
-                  project: currentProject,
-                  settings: const AppSettings(usePagesStyleLayout: true),
-                  onProjectChanged: (updated) {
-                    setState(() {
-                      currentProject = updated;
-                    });
-                  },
-                );
-              },
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      // Expand Tier 2
-      final expandBtn = find.byTooltip('Expandir notas').first;
-      await tester.tap(expandBtn);
-      await tester.pumpAndSettle();
-
-      // Verify labels DS, FF, GPR are present in Tier 2
-      expect(find.text('DS'), findsOneWidget);
-      expect(find.text('FF'), findsOneWidget);
-      expect(find.text('GPR'), findsOneWidget);
-
-      // Tap DS label/checkbox
-      await tester.tap(find.text('DS'));
-      await tester.pumpAndSettle();
-
-      expect(currentProject.log.records[0].isDs, isTrue);
-      expect(currentProject.log.records[0].isFf, isFalse);
-      expect(currentProject.log.records[0].isGpr, isFalse);
-    });
-
-    testWidgets('renders DR and TF checkboxes in Tier 2 and toggles them', (tester) async {
-      tester.view.physicalSize = const Size(1920, 1080);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-
-      var currentProject = RenombrataProject(
-        log: ShootingLog(
-          metadata: ShootingLogMetadata.empty(),
-          records: [
-            ShotRecord(id: 'r1', chapter: '1', scene: '10', plane: '1', take: '1', cameras: [], reel: '001'),
-          ],
-        ),
-        defaultReel: '001',
-        activeCamera: 'A',
-        cameraNames: ['A'],
-        showDr: true,
+        showMos: true,
         showTf: true,
       );
 
@@ -654,16 +593,22 @@ void main() {
       await tester.tap(expandBtn);
       await tester.pumpAndSettle();
 
-      // Verify labels DR and TF are present in Tier 2
-      expect(find.text('DR'), findsOneWidget);
+      // Verify labels MOS and TF are present in Tier 2
+      expect(find.text('MOS'), findsOneWidget);
       expect(find.text('TF'), findsOneWidget);
 
-      // Tap DR
-      await tester.tap(find.text('DR'));
-      await tester.pumpAndSettle();
-      expect(currentProject.log.records[0].isDr, isTrue);
+      // Verify special camera flags (DS, FF, GPR, DR) are not in Tier 2 take row
+      expect(find.text('DS'), findsNothing);
+      expect(find.text('FF'), findsNothing);
+      expect(find.text('GPR'), findsNothing);
+      expect(find.text('DR'), findsNothing);
 
-      // Tap TF
+      // Tap MOS label/checkbox
+      await tester.tap(find.text('MOS'));
+      await tester.pumpAndSettle();
+      expect(currentProject.log.records[0].isMos, isTrue);
+
+      // Tap TF label/checkbox
       await tester.tap(find.text('TF'));
       await tester.pumpAndSettle();
       expect(currentProject.log.records[0].isTf, isTrue);
