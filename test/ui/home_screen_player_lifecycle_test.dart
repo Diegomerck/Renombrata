@@ -12,6 +12,8 @@ class FakePlayerStream extends Fake implements PlayerStream {
   final StreamController<Duration> _positionController = StreamController<Duration>.broadcast();
   final StreamController<Duration> _durationController = StreamController<Duration>.broadcast();
   final StreamController<double> _volumeController = StreamController<double>.broadcast();
+  final StreamController<PlayerLog> _logController = StreamController<PlayerLog>.broadcast();
+  final StreamController<String> _errorController = StreamController<String>.broadcast();
 
   @override
   Stream<bool> get playing => _playingController.stream;
@@ -25,11 +27,19 @@ class FakePlayerStream extends Fake implements PlayerStream {
   @override
   Stream<double> get volume => _volumeController.stream;
 
+  @override
+  Stream<PlayerLog> get log => _logController.stream;
+
+  @override
+  Stream<String> get error => _errorController.stream;
+
   void close() {
     _playingController.close();
     _positionController.close();
     _durationController.close();
     _volumeController.close();
+    _logController.close();
+    _errorController.close();
   }
 }
 
@@ -117,6 +127,7 @@ void main() {
             initialProject: project,
             initialReport: report,
             customStudioPlayer: fakePlayer,
+            initialStudioMode: false,
           ),
         ),
       );
@@ -144,6 +155,7 @@ void main() {
             initialProject: project,
             initialReport: report,
             customStudioPlayer: fakePlayer,
+            initialStudioMode: false,
           ),
         ),
       );
@@ -152,8 +164,8 @@ void main() {
       final dynamic homeState = tester.state(find.byType(HomeScreen));
       final List<StreamSubscription> subscriptions = homeState.studioSubscriptions;
 
-      // 4 stream subscriptions (playing, position, duration, volume) are active
-      expect(subscriptions.length, equals(4));
+      // 6 stream subscriptions (playing, position, duration, volume, log, error) are active
+      expect(subscriptions.length, equals(6));
 
       // Destroy HomeScreen to trigger dispose()
       await tester.pumpWidget(const SizedBox.shrink());
@@ -178,6 +190,7 @@ void main() {
             initialProject: project,
             initialReport: report,
             customStudioPlayer: fakePlayer,
+            initialStudioMode: false,
           ),
         ),
       );

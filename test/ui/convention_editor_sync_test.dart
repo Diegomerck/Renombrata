@@ -80,8 +80,11 @@ void main() {
         await tester.pumpAndSettle();
 
         // Enter Modo Estudio
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Open the convention editor pane if not visible
         if (find.text('Convención de Texto').evaluate().isEmpty) {
@@ -171,8 +174,11 @@ void main() {
         await tester.pumpAndSettle();
 
         // Enter Modo Estudio
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Select Clip 1
         await tester.tap(find.byKey(const ValueKey('studio_clip_0')));
@@ -266,8 +272,11 @@ void main() {
         await tester.tap(find.text('Renombrador de Medios'));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Select Clip 1
         await tester.tap(find.byKey(const ValueKey('studio_clip_0')));
@@ -340,8 +349,11 @@ void main() {
         await tester.tap(find.text('Renombrador de Medios'));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Type arbitrary random string "TEST" into convention editor
         final editorField = find.byKey(
@@ -409,8 +421,11 @@ void main() {
       await tester.tap(find.text('Renombrador de Medios'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-      await tester.pumpAndSettle();
+      final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+      if (studioBtn.evaluate().isNotEmpty) {
+        await tester.tap(studioBtn);
+        await tester.pumpAndSettle();
+      }
 
       // Select Clip 1
       await tester.tap(find.byKey(const ValueKey('studio_clip_0')));
@@ -484,8 +499,11 @@ void main() {
         await tester.tap(find.text('Renombrador de Medios'));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Select Clip 2 (index 1)
         await tester.tap(find.byKey(const ValueKey('studio_clip_1')));
@@ -552,8 +570,11 @@ void main() {
         await tester.tap(find.text('Renombrador de Medios'));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Select Clip 1
         await tester.tap(find.byKey(const ValueKey('studio_clip_0')));
@@ -628,8 +649,11 @@ void main() {
         await tester.tap(find.text('Renombrador de Medios'));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-        await tester.pumpAndSettle();
+        final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+        if (studioBtn.evaluate().isNotEmpty) {
+          await tester.tap(studioBtn);
+          await tester.pumpAndSettle();
+        }
 
         // Select Camera B clip
         await tester.tap(find.byKey(const ValueKey('studio_clip_0')));

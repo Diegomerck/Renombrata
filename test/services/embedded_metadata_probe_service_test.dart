@@ -111,6 +111,101 @@ void main() {
       expect(result!.tcIn, '10:00:00:00');
     });
 
+    test('parses Canon RAW Light (.CRM) MediaInfo JSON with QuickTime TC and TimeCode_FirstFrame', () {
+      const crmMediaInfoJson = '''{
+  "media": {
+    "@ref": "A001_C001_1028OC_001.CRM",
+    "track": [
+      {
+        "@type": "General",
+        "Format": "Canon RAW Light",
+        "Duration": "14.250",
+        "FrameRate": "23.976"
+      },
+      {
+        "@type": "Video",
+        "Format": "Cinema RAW Light",
+        "Duration": "14.250",
+        "FrameRate": "23.976"
+      },
+      {
+        "@type": "Other",
+        "Type": "Time code",
+        "Format": "QuickTime TC",
+        "TimeCode_FirstFrame": "02:15:30:12",
+        "TimeCode_LastFrame": "02:15:44:18",
+        "TimeCode_Source": "QuickTime TC",
+        "FrameRate": "23.976"
+      }
+    ]
+  }
+}''';
+
+      final result = EmbeddedMetadataProbeService.parseMediaInfoJson(crmMediaInfoJson);
+      expect(result, isNotNull);
+      expect(result!.tcIn, '02:15:30:12');
+      expect(result.tcOut, '02:15:44:18');
+      expect(result.frameRate, '23.976');
+    });
+
+    test('parses MXF MediaInfo JSON where TimeCode_Source is SMPTE TC and TimeCode_FirstFrame is in Video track', () {
+      const mxfMediaInfoJson = '''{
+  "media": {
+    "track": [
+      {
+        "@type": "General",
+        "Format": "MXF",
+        "Duration": "20.000",
+        "FrameRate": "25.000"
+      },
+      {
+        "@type": "Video",
+        "Format": "XAVC",
+        "Duration": "20.000",
+        "FrameRate": "25.000",
+        "TimeCode_FirstFrame": "08:30:00:00",
+        "TimeCode_Source": "SMPTE TC"
+      }
+    ]
+  }
+}''';
+
+      final result = EmbeddedMetadataProbeService.parseMediaInfoJson(mxfMediaInfoJson);
+      expect(result, isNotNull);
+      expect(result!.tcIn, '08:30:00:00');
+      // 20s at 25fps = 500 frames -> 08:30:20:00
+      expect(result.tcOut, '08:30:20:00');
+      expect(result.frameRate, '25.000');
+    });
+
+    test('parses GoPro Proxy (.LRV) MediaInfo JSON correctly', () {
+      const lrvMediaInfoJson = '''{
+  "media": {
+    "@ref": "GX010042.LRV",
+    "track": [
+      {
+        "@type": "General",
+        "Duration": "6.000",
+        "FrameRate": "29.970"
+      },
+      {
+        "@type": "Video",
+        "Format": "AVC",
+        "Duration": "6.000",
+        "FrameRate": "29.970",
+        "extra": {
+          "TimeCode_FirstFrame": "14:20:10:00"
+        }
+      }
+    ]
+  }
+}''';
+
+      final result = EmbeddedMetadataProbeService.parseMediaInfoJson(lrvMediaInfoJson);
+      expect(result, isNotNull);
+      expect(result!.tcIn, '14:20:10:00');
+      expect(result.tcOut, '14:20:16:00');
+    });
     test('returns null for empty or invalid MediaInfo JSON', () {
       expect(EmbeddedMetadataProbeService.parseMediaInfoJson(''), isNull);
       expect(EmbeddedMetadataProbeService.parseMediaInfoJson('{}'), isNull);

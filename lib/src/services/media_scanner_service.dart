@@ -6,19 +6,50 @@ class ScannedFile {
   final String basename;
   final String extension;
   final bool isVideo;
+  final bool isPrimaryVideo;
   final bool isXml;
   final bool isAudio;
+  final bool isCompanion;
 
   ScannedFile(this.path)
-      : basename = p.basename(path),
-        extension = p.extension(path).toLowerCase(),
-        isVideo = ['.mp4', '.mov', '.mxf'].contains(p.extension(path).toLowerCase()),
-        isXml = p.extension(path).toLowerCase() == '.xml',
-        isAudio = ['.wav', '.aif', '.aiff', '.mp3', '.m4a', '.aac'].contains(p.extension(path).toLowerCase());
+    : basename = p.basename(path),
+      extension = p.extension(path).toLowerCase(),
+      isVideo = [
+        '.mp4',
+        '.mov',
+        '.mxf',
+        '.crm',
+        '.lrv',
+      ].contains(p.extension(path).toLowerCase()),
+      isPrimaryVideo = [
+        '.mp4',
+        '.mov',
+        '.mxf',
+        '.crm',
+      ].contains(p.extension(path).toLowerCase()),
+      isXml = p.extension(path).toLowerCase() == '.xml',
+      isAudio = [
+        '.wav',
+        '.aif',
+        '.aiff',
+        '.mp3',
+        '.m4a',
+        '.aac',
+      ].contains(p.extension(path).toLowerCase()),
+      isCompanion = [
+        '.lrv',
+        '.thm',
+        '.xml',
+        '.bim',
+        '.srt',
+      ].contains(p.extension(path).toLowerCase());
 }
 
 class MediaScannerService {
-  static List<ScannedFile> scanDirectory(String dirPath, {bool searchSubdirectories = true}) {
+  static List<ScannedFile> scanDirectory(
+    String dirPath, {
+    bool searchSubdirectories = true,
+  }) {
     final dir = Directory(dirPath);
     if (!dir.existsSync()) return [];
 
@@ -38,7 +69,7 @@ class MediaScannerService {
 
     return allFiles
         .map((f) => ScannedFile(f.path))
-        .where((f) => f.isVideo || f.isXml || f.isAudio)
+        .where((f) => f.isVideo || f.isXml || f.isAudio || f.isCompanion)
         .toList();
   }
 

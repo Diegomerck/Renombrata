@@ -227,24 +227,52 @@ class EmbeddedMetadataProbeService {
       final media = decoded['media'];
       if (media is! Map) return null;
 
-      var tracks = media['track'];
-      if (tracks == null) return null;
-      if (tracks is! List) {
-        tracks = [tracks];
+      var rawTracks = media['track'];
+      if (rawTracks == null) return null;
+      final List tracks = rawTracks is List ? List.from(rawTracks) : [rawTracks];
+
+      // Sort tracks prioritizing Other (Time code / SMPTE / QuickTime), Video, General, then others
+      int trackPriority(dynamic t) {
+        if (t is! Map) return 99;
+        final type = (t['@type'] ?? '').toString().toLowerCase();
+        final subType = (t['Type'] ?? '').toString().toLowerCase();
+        final format = (t['Format'] ?? '').toString().toLowerCase();
+        if (type == 'other' &&
+            (subType.contains('time code') ||
+                format.contains('tc') ||
+                format.contains('smpte') ||
+                format.contains('quicktime'))) {
+          return 0;
+        }
+        if (type == 'video') return 1;
+        if (type == 'other') return 2;
+        if (type == 'general') return 3;
+        return 4;
       }
+
+      tracks.sort((a, b) => trackPriority(a).compareTo(trackPriority(b)));
 
       String? tcIn;
       String? tcOut;
       String? frameRate;
       double? durationSec;
 
-      // Scan tracks: prioritize Other (TimeCode), Video, then General
       for (final t in tracks) {
         if (t is! Map) continue;
 
         // Check frame rate
-        if (frameRate == null && t['FrameRate'] != null) {
-          frameRate = t['FrameRate'].toString();
+        if (frameRate == null) {
+          if (t['FrameRate'] != null) {
+            frameRate = t['FrameRate'].toString();
+          } else if (t['FrameRate_Nominal'] != null) {
+            frameRate = t['FrameRate_Nominal'].toString();
+          } else if (t['FrameRate_Num'] != null && t['FrameRate_Den'] != null) {
+            final num = double.tryParse(t['FrameRate_Num'].toString());
+            final den = double.tryParse(t['FrameRate_Den'].toString());
+            if (num != null && den != null && den > 0) {
+              frameRate = (num / den).toStringAsFixed(3);
+            }
+          }
         }
 
         // Check duration
@@ -254,28 +282,48 @@ class EmbeddedMetadataProbeService {
 
         // Look for TC In
         if (tcIn == null) {
-          tcIn = _findFirstString(t, [
+          tcIn = _findFirstTimecode(t, [
             'TimeCode_FirstFrame',
+            'TimeCode',
+            'timecode',
             'TimeCode_Source',
+            'com_apple_quicktime_timecode',
+            'QuickTime_TC',
+            'SMPTE_TC',
+            'tc_in',
           ]);
 
           if (tcIn == null && t['extra'] is Map) {
             final extra = t['extra'] as Map;
-            tcIn = _findFirstString(extra, [
+            tcIn = _findFirstTimecode(extra, [
               'com_apple_quicktime_timecode',
               'TimeCode_FirstFrame',
-              'TimeCode_Source',
+              'TimeCode',
               'timecode',
+              'TimeCode_Source',
+              'QuickTime_TC',
+              'SMPTE_TC',
+              'tc_in',
             ]);
           }
         }
 
         // Look for TC Out
         if (tcOut == null) {
-          tcOut = _findFirstString(t, ['TimeCode_LastFrame']);
+          tcOut = _findFirstTimecode(t, [
+            'TimeCode_LastFrame',
+            'TimeCode_End',
+            'tc_out',
+            'TimeCode_Striped_LastFrame',
+          ]);
           if (tcOut == null && t['extra'] is Map) {
             final extra = t['extra'] as Map;
-            tcOut = _findFirstString(extra, ['TimeCode_LastFrame']);
+            tcOut = _findFirstTimecode(extra, [
+              'TimeCode_LastFrame',
+              'TimeCode_End',
+              'tc_out',
+              'TimeCode_Striped_LastFrame',
+            ]);
           }
         }
       }
@@ -370,6 +418,26 @@ class EmbeddedMetadataProbeService {
     }
   }
 
+  static bool _isValidTimecodeString(String? val) {
+    if (val == null) return false;
+    final clean = val.trim();
+    if (clean.isEmpty) return false;
+    // Format names or package identifiers should not be treated as timecodes
+    if (clean.toLowerCase().contains('tc') && !clean.contains(':')) return false;
+    if (clean.toLowerCase().contains('package')) return false;
+    return RegExp(r'^(\d{1,2}[:;.]){3}\d{1,2}$').hasMatch(clean) ||
+        RegExp(r'^\d{8}$').hasMatch(clean);
+  }
+
+  static String? _findFirstTimecode(Map map, List<String> keys) {
+    for (final key in keys) {
+      if (map.containsKey(key) && map[key] != null) {
+        final val = map[key].toString().trim();
+        if (_isValidTimecodeString(val)) return val;
+      }
+    }
+    return null;
+  }
   static String? _findFirstString(Map map, List<String> keys) {
     for (final key in keys) {
       if (map.containsKey(key) && map[key] != null) {

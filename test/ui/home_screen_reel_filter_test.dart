@@ -40,6 +40,7 @@ void main() {
           home: HomeScreen(
             initialProject: project,
             initialReport: report,
+            initialStudioMode: false,
           ),
         ),
       );
@@ -116,6 +117,7 @@ void main() {
           home: HomeScreen(
             initialProject: project,
             initialReport: report,
+            initialStudioMode: false,
           ),
         ),
       );
@@ -163,6 +165,7 @@ void main() {
           home: HomeScreen(
             initialProject: project,
             initialReport: report,
+            initialStudioMode: false,
           ),
         ),
       );

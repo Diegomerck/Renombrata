@@ -189,7 +189,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: HomeScreen(initialReport: report),
+        home: HomeScreen(initialReport: report, initialStudioMode: false),
       ),
     );
 
@@ -295,7 +295,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: HomeScreen(initialReport: report),
+        home: HomeScreen(initialReport: report, initialStudioMode: false),
       ),
     );
     await tester.pumpAndSettle();

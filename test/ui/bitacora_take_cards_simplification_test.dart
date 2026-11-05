@@ -104,8 +104,11 @@ void main() {
       await tester.tap(find.text('Renombrador de Medios'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
-      await tester.pumpAndSettle();
+      final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
+      if (studioBtn.evaluate().isNotEmpty) {
+        await tester.tap(studioBtn);
+        await tester.pumpAndSettle();
+      }
 
       // Verify MOS and TF chips are present
       expect(find.byKey(const ValueKey('studio_flag_mos')), findsOneWidget);

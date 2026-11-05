@@ -3,6 +3,7 @@ import 'package:renombrata/src/models/dry_run_report.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/services/clip_matcher_service.dart';
 import 'package:renombrata/src/services/media_scanner_service.dart';
+import 'package:renombrata/src/services/sidecar_metadata_service.dart';
 
 void main() {
   group('ClipMatcherService - Stable Natural Ordering Tests', () {
@@ -485,6 +486,165 @@ void main() {
       expect(xmlProp.status, equals(ProposalStatus.unmatchedClip));
       expect(xmlProp.isCompanionFile, isTrue);
       expect(xmlProp.companionFilePath, equals(videoPath));
+    });
+  });
+  group('ClipMatcherService - Extended Video (.CRM, .LRV) and Audio (.WAV) Probing', () {
+    final log = ShootingLog(
+      metadata: ShootingLogMetadata(
+        nomenclature: 'CANON_RAW',
+        date: '261028',
+        unit: 'U1',
+        day: 'D1',
+        producer: 'P',
+        production: 'PR',
+        location: 'L',
+        audioFormat: 'F',
+        frameRate: '24',
+        videoCodec: 'CRM',
+        responsibleEngineer: 'E',
+        ingestor: 'I',
+      ),
+      records: [
+        ShotRecord(
+          chapter: '1',
+          scene: '10',
+          plane: '1',
+          take: '1',
+          reel: 'A001',
+          tcIn: '01:00:00:00',
+          cameras: [
+            CameraTakeRecord(cameraName: 'A', clipName: '001'),
+          ],
+        ),
+        ShotRecord(
+          chapter: '1',
+          scene: '10',
+          plane: '2',
+          take: '2',
+          reel: 'A001',
+          tcIn: '02:00:00:00',
+          cameras: [
+            CameraTakeRecord(cameraName: 'A', clipName: '002'),
+          ],
+        ),
+      ],
+    );
+
+    test('matchClipsWithEmbeddedMetadata probes .crm and .lrv standalone files', () async {
+      final probedPaths = <String>[];
+      final files = [
+        ScannedFile('/media/A001C001.CRM'),
+        ScannedFile('/media/A001C002.LRV'),
+      ];
+
+      final report = await ClipMatcherService.matchClipsWithEmbeddedMetadata(
+        scannedFiles: files,
+        log: log,
+        targetCamera: 'A',
+        probeFunction: (path) async {
+          probedPaths.add(path);
+          if (path.endsWith('.CRM')) {
+            return SidecarMetadata(tcIn: '01:00:00:00', tcOut: '01:00:10:00', frameRate: '24');
+          }
+          if (path.endsWith('.LRV')) {
+            return SidecarMetadata(tcIn: '02:00:00:00', tcOut: '02:00:05:00', frameRate: '24');
+          }
+          return null;
+        },
+      );
+
+      expect(probedPaths, containsAll(['/media/A001C001.CRM', '/media/A001C002.LRV']));
+
+      final crmProposal = report.proposals.firstWhere((p) => p.originalFilePath == '/media/A001C001.CRM');
+      expect(crmProposal.fileTcIn, '01:00:00:00');
+      expect(crmProposal.fileTcOut, '01:00:10:00');
+      expect(crmProposal.status, ProposalStatus.ready);
+
+      final lrvProposal = report.proposals.firstWhere((p) => p.originalFilePath == '/media/A001C002.LRV');
+      expect(lrvProposal.fileTcIn, '02:00:00:00');
+      expect(lrvProposal.fileTcOut, '02:00:05:00');
+      expect(lrvProposal.status, ProposalStatus.ready);
+    });
+
+    test('matchFiles matches .wav audio clips preserving extension in proposed name', () {
+      final audioFiles = [
+        ScannedFile('/media/A001C001.WAV'),
+      ];
+
+      final report = ClipMatcherService.matchFiles(
+        scannedFiles: audioFiles,
+        log: log,
+        targetCamera: 'A',
+      );
+
+      expect(report.totalMatched, 1);
+      final wavProp = report.proposals.firstWhere((p) => p.originalFilePath == '/media/A001C001.WAV');
+      expect(wavProp.status, ProposalStatus.ready);
+      expect(wavProp.proposedFileName, endsWith('.WAV'));
+    });
+
+    test('GoPro & Multi-File Stacks: groups master MP4 with companion proxy LRV and thumbnail THM', () {
+      final goProLog = ShootingLog(
+        metadata: ShootingLogMetadata.empty().copyWith(
+          nomenclature: 'GOPRO',
+          date: '261105',
+          day: '1',
+          unit: '1',
+        ),
+        records: [
+          ShotRecord(
+            id: 'gp-1',
+            chapter: '1',
+            scene: '10',
+            take: '1',
+            reel: 'A001',
+            cameras: [CameraTakeRecord(cameraName: 'A', clipName: '8226')],
+          ),
+        ],
+      );
+
+      final files = [
+        ScannedFile('/media/GX018226.MP4'),
+        ScannedFile('/media/GL018226.LRV'),
+        ScannedFile('/media/GX018226.THM'),
+        ScannedFile('/media/GX018226.SRT'),
+      ];
+
+      final report = ClipMatcherService.matchFiles(
+        scannedFiles: files,
+        log: goProLog,
+        targetCamera: 'A',
+      );
+
+      // Only the master video is counted in totalMatched (not companions)
+      expect(report.totalMatched, equals(1));
+      expect(report.proposals.length, equals(4));
+
+      final masterProp = report.proposals.firstWhere((p) => !p.isCompanionFile);
+      expect(masterProp.originalFilePath, equals('/media/GX018226.MP4'));
+      expect(masterProp.proposedFileName, equals('GOPRO_261105_10_T1_A001_1_1.MP4'));
+      expect(masterProp.status, equals(ProposalStatus.ready));
+
+      final lrvProp = report.proposals.firstWhere((p) => p.originalFilePath == '/media/GL018226.LRV');
+      expect(lrvProp.isCompanionFile, isTrue);
+      expect(lrvProp.companionFilePath, equals('/media/GX018226.MP4'));
+      expect(lrvProp.proposedFileName, equals('GOPRO_261105_10_T1_A001_1_1.LRV'));
+
+      final thmProp = report.proposals.firstWhere((p) => p.originalFilePath == '/media/GX018226.THM');
+      expect(thmProp.isCompanionFile, isTrue);
+      expect(thmProp.companionFilePath, equals('/media/GX018226.MP4'));
+      expect(thmProp.proposedFileName, equals('GOPRO_261105_10_T1_A001_1_1.THM'));
+
+      final srtProp = report.proposals.firstWhere((p) => p.originalFilePath == '/media/GX018226.SRT');
+      expect(srtProp.isCompanionFile, isTrue);
+      expect(srtProp.companionFilePath, equals('/media/GX018226.MP4'));
+      expect(srtProp.proposedFileName, equals('GOPRO_261105_10_T1_A001_1_1.SRT'));
+
+      // Natural ordering: Master appears first, followed by its companions
+      expect(report.proposals[0].originalFilePath, equals('/media/GX018226.MP4'));
+      expect(report.proposals[1].isCompanionFile, isTrue);
+      expect(report.proposals[2].isCompanionFile, isTrue);
+      expect(report.proposals[3].isCompanionFile, isTrue);
     });
   });
 }

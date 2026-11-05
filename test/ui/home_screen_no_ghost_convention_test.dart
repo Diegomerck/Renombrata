@@ -31,7 +31,11 @@ void main() {
     ]);
 
     await tester.pumpWidget(MaterialApp(
-      home: HomeScreen(initialProject: project, initialReport: report),
+      home: HomeScreen(
+        initialProject: project,
+        initialReport: report,
+        initialStudioMode: false,
+      ),
     ));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Renombrador de Medios'));

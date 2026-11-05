@@ -44,6 +44,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Native binaries (large dynamic libraries)
+*.dll
+assets/bin/windows/libmpv-2.dll
+
 # Heavy local media tests
 Test Files/Micronovela Media Test/
 

@@ -155,3 +155,30 @@ git commit -am "release: update field build"; git tag v1.0.0-beta.2; git push or
 
 > [!TIP]
 > Replace v1.0.0-beta.2 with whatever version tag you want to release.
+
+---
+
+## 8. Workflow Triggers & Execution Modes
+
+Renombrata enforces a single-conversation pair programming model designed for token quota efficiency:
+
+| Mode / Trigger | When to Use | Agent Behavior |
+| :--- | :--- | :--- |
+| *(Default - No prefix)* | Architecture discussions, brainstorming, UI/UX scoping, design decisions | **PLANNING ONLY**: Zero code edits, zero builds or tests. The agent clarifies specs, assesses task complexity, and declares the recommended execution tier. |
+| **`IMPLEMENTATION`** | Starting message with `IMPLEMENTATION` | **SUBAGENT EXECUTION**: Automatically dispatches a subagent at the assessed tier (`flash` or `pro`), runs `flutter test`, and provides a concise summary. |
+| **`QUICK FIX`** | Starting message with `QUICK FIX` | **DIRECT EDIT**: Applies trivial edits (single typo, 1-line styling) directly without subagent overhead. |
+
+### Complexity & Execution Tiers (Assessed in Planning)
+* **Standard Tier (`Model: "flash"`)**: 1–2 files, localized UI styling, widget adjustments, simple components. Keeps credit usage minimal.
+* **High Tier (`Model: "pro"`)**: Multi-file refactors, reconciliation engine algorithms, state machine logic, complex tests.
+* *Safeguard: Expensive models (e.g. Argon) are NEVER invoked unless explicitly requested by name.*
+
+---
+
+## 9. Slash Commands & Context Management
+
+Manage context window and token usage within the single persistent thread:
+
+* **`/compact`**: Summarizes conversation history to prune old turns and drastically reduce tokens sent on subsequent turns. Recommended after completing features or milestones.
+* **`/plan`**: Requests a structured, multi-step planning session for complex features.
+* **`/goal`**: Triggers autonomous, goal-oriented completion for thorough end-to-end tasks.

@@ -34,6 +34,7 @@ void main() {
       home: HomeScreen(
         initialProject: project,
         initialReport: report,
+        initialStudioMode: false,
       ),
     );
   }

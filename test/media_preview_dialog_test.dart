@@ -1,10 +1,77 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:renombrata/src/models/dry_run_report.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/ui/media_preview_dialog.dart';
+import 'package:renombrata/src/utils/media_proxy_utils.dart';
+
+class _FakePlayerStream extends Fake implements PlayerStream {
+  final StreamController<bool> _playingController = StreamController<bool>.broadcast();
+  final StreamController<Duration> _positionController = StreamController<Duration>.broadcast();
+  final StreamController<Duration> _durationController = StreamController<Duration>.broadcast();
+  final StreamController<double> _volumeController = StreamController<double>.broadcast();
+  final StreamController<PlayerLog> _logController = StreamController<PlayerLog>.broadcast();
+  final StreamController<String> _errorController = StreamController<String>.broadcast();
+
+  @override
+  Stream<bool> get playing => _playingController.stream;
+
+  @override
+  Stream<Duration> get position => _positionController.stream;
+
+  @override
+  Stream<Duration> get duration => _durationController.stream;
+
+  @override
+  Stream<double> get volume => _volumeController.stream;
+
+  @override
+  Stream<PlayerLog> get log => _logController.stream;
+
+  @override
+  Stream<String> get error => _errorController.stream;
+
+  void emitError(String err) {
+    _errorController.add(err);
+  }
+
+  void close() {
+    _playingController.close();
+    _positionController.close();
+    _durationController.close();
+    _volumeController.close();
+    _logController.close();
+    _errorController.close();
+  }
+}
+
+class _FakePlayer extends Fake implements Player {
+  bool pauseCalled = false;
+  bool disposeCalled = false;
+  final _FakePlayerStream _stream = _FakePlayerStream();
+
+  @override
+  PlayerStream get stream => _stream;
+
+  @override
+  Future<void> pause() async {
+    pauseCalled = true;
+  }
+
+  @override
+  Future<void> dispose({int? code}) async {
+    disposeCalled = true;
+    _stream.close();
+  }
+
+  @override
+  Future<void> open(Playable playable, {bool? play}) async {}
+}
 
 void main() {
   group('MediaPreviewDialog Quick-Tagger & Playlist Tests', () {
@@ -814,6 +881,247 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(updatedAutoSort, isFalse);
+    });
+
+    testWidgets('stream.error triggers Broadcast Slate Monitor in MediaPreviewDialog', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final fakePlayer = _FakePlayer();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => MediaPreviewDialog(
+                        playlist: [proposal1],
+                        initialIndex: 0,
+                        projectMetadata: testMetadata,
+                        activeCamera: 'A',
+                        customPlayer: fakePlayer,
+                        onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {},
+                      ),
+                    );
+                  },
+                  child: const Text('Open Preview'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Preview'));
+      await tester.pumpAndSettle();
+
+      // Before error: slate monitor is not shown
+      expect(find.byKey(const ValueKey('preview_broadcast_slate_monitor')), findsNothing);
+
+      // Emit error
+      fakePlayer._stream.emitError('Unsupported RAW container codec');
+      await tester.pumpAndSettle();
+
+      // Slate monitor is now visible
+      expect(find.byKey(const ValueKey('preview_broadcast_slate_monitor')), findsOneWidget);
+      expect(find.byIcon(Icons.movie_filter_outlined), findsOneWidget);
+      expect(find.text('[MONITOR DE METADATOS SMPTE]'), findsOneWidget);
+      expect(find.text('[BROADCAST / RAW MONITOR]'), findsOneWidget);
+      expect(
+        find.text(
+          'Metadatos y Timecode SMPTE sincronizados. El códec nativo no requiere decodificación visual para reconciliación y renombrado.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Timecode: 09:04:22:00 → 09:07:29:23'), findsOneWidget);
+      expect(find.text('Formato nativo: .MP4'), findsOneWidget);
+      expect(find.text('Unsupported RAW container codec'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('preview_broadcast_slate_monitor')),
+          matching: find.text('A001C001_260608ZY.MP4'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('MediaPreviewDialog: .CRM Canon RAW Light displays dedicated Slate HUD with badges and status message', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final crmProposal = RenameProposal(
+        originalFilePath: '/media/A001C001.CRM',
+        proposedFileName: 'PROJ_261019_10_1_T1_A001_D1_U1.CRM',
+        fileReel: 'A001',
+        fileTcIn: '02:00:00:00',
+        fileTcOut: '02:05:00:00',
+        status: ProposalStatus.ready,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => MediaPreviewDialog(
+                        playlist: [crmProposal],
+                        initialIndex: 0,
+                        projectMetadata: testMetadata,
+                        activeCamera: 'A',
+                        onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {},
+                      ),
+                    );
+                  },
+                  child: const Text('Open Preview'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Preview'));
+      await tester.pumpAndSettle();
+
+      // Canon Cinema RAW HUD elements
+      expect(find.byKey(const ValueKey('preview_canon_raw_hud')), findsOneWidget);
+      expect(find.byKey(const ValueKey('preview_canon_raw_badge')), findsOneWidget);
+      expect(find.text('[CANON CINEMA RAW LIGHT]'), findsOneWidget);
+      expect(find.byKey(const ValueKey('preview_smpte_live_badge')), findsOneWidget);
+      expect(find.text('[AUDIO & TIMECODE SMPTE EN VIVO]'), findsOneWidget);
+
+      expect(
+        find.text(
+          'Reproduciendo audio nativo PCM (24-bit) y código de tiempo SMPTE sincronizado. El formato CRAW de sensor opera en modo claqueta de audio.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Timecode: 02:00:00:00 → 02:05:00:00'), findsOneWidget);
+      expect(find.text('Formato nativo: .CRM'), findsOneWidget);
+      expect(find.byKey(const ValueKey('preview_craw_audio_waveform')), findsOneWidget);
+    });
+
+    testWidgets('MediaPreviewDialog: Option B poster frame renders backdrop behind slate HUD', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final tempDir = Directory.systemTemp.createTempSync('preview_poster_test_');
+      addTearDown(() {
+        try {
+          tempDir.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+
+      final dummyImage = File('${tempDir.path}/dummy.jpg')..createSync();
+      MediaProxyUtils.testPosterFrames['/media/A001C001.CRM'] = dummyImage;
+      addTearDown(MediaProxyUtils.resetTestMocks);
+
+      final crmProposal = RenameProposal(
+        originalFilePath: '/media/A001C001.CRM',
+        proposedFileName: 'PROJ_261019_10_1_T1_A001_D1_U1.CRM',
+        fileReel: 'A001',
+        fileTcIn: '02:00:00:00',
+        fileTcOut: '02:05:00:00',
+        status: ProposalStatus.ready,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => MediaPreviewDialog(
+                        playlist: [crmProposal],
+                        initialIndex: 0,
+                        projectMetadata: testMetadata,
+                        activeCamera: 'A',
+                        onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {},
+                      ),
+                    );
+                  },
+                  child: const Text('Open Preview'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Preview'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Image), findsWidgets);
+      expect(find.byKey(const ValueKey('preview_canon_raw_hud')), findsOneWidget);
+    });
+
+    testWidgets('MediaPreviewDialog: Option C camera proxy auto-pairing displays green proxy badge', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      MediaProxyUtils.testLinkedProxies['/media/A001C001.CRM'] = '/media/Proxy/A001C001_Proxy.mp4';
+      addTearDown(MediaProxyUtils.resetTestMocks);
+
+      final crmProposal = RenameProposal(
+        originalFilePath: '/media/A001C001.CRM',
+        proposedFileName: 'PROJ_261019_10_1_T1_A001_D1_U1.CRM',
+        fileReel: 'A001',
+        fileTcIn: '02:00:00:00',
+        fileTcOut: '02:05:00:00',
+        status: ProposalStatus.ready,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                return ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => MediaPreviewDialog(
+                        playlist: [crmProposal],
+                        initialIndex: 0,
+                        projectMetadata: testMetadata,
+                        activeCamera: 'A',
+                        onSaveTake: (prop, chapter, scene, plane, take, isMos, notes) async {},
+                      ),
+                    );
+                  },
+                  child: const Text('Open Preview'),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Preview'));
+      await tester.pumpAndSettle();
+
+      // Green proxy badge is visible
+      expect(find.byKey(const ValueKey('preview_proxy_linked_badge')), findsOneWidget);
+      expect(find.text('[PROXY VINCULADO: A001C001_Proxy.mp4]'), findsOneWidget);
     });
   });
 }

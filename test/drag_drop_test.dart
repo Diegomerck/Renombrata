@@ -373,4 +373,44 @@ void main() {
     expect(find.textContaining('Bitácora importada'), findsOneWidget);
     expect(find.textContaining('2 tomas registradas en 2 reels'), findsOneWidget);
   });
+
+  testWidgets('DropTarget handles direct individual media files drag & drop', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HomeScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final dropTargetFinder = find.byType(DropTarget);
+    final dropTarget = tester.widget<DropTarget>(dropTargetFinder);
+
+    final tempDir = Directory.systemTemp.createTempSync('drop_media_test_');
+    addTearDown(() {
+      try {
+        tempDir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+
+    final file1 = File('${tempDir.path}/A001C001.mov')..writeAsBytesSync(List.filled(100, 0));
+    final file2 = File('${tempDir.path}/A001C002.crm')..writeAsBytesSync(List.filled(100, 0));
+
+    await tester.runAsync(() async {
+      dropTarget.onDragDone?.call(DropDoneDetails(
+        files: [DropItemFile(file1.path), DropItemFile(file2.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ));
+      await Future.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Archivos multimedia cargados'), findsOneWidget);
+    expect(find.textContaining('2 clip(s) detectado(s)'), findsOneWidget);
+  });
 }

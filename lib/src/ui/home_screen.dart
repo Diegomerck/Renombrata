@@ -2,6 +2,7 @@ import 'package:renombrata/src/ui/dialogs/folder_ingestion_dialog.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +23,7 @@ import 'package:renombrata/src/ui/settings_dialog.dart';
 import 'package:renombrata/src/ui/bitacora_editor_tab.dart';
 import 'package:renombrata/src/ui/conflict_resolver_dialog.dart';
 import 'package:renombrata/src/ui/media_preview_dialog.dart';
+import 'package:renombrata/src/utils/media_proxy_utils.dart';
 import 'package:path/path.dart' as p;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:media_kit/media_kit.dart';
@@ -42,6 +44,7 @@ class HomeScreen extends StatefulWidget {
   final DryRunReport? initialReport;
   final Player? customStudioPlayer;
   final VideoController? customStudioVideoController;
+  final bool? initialStudioMode;
 
   const HomeScreen({
     super.key,
@@ -49,6 +52,7 @@ class HomeScreen extends StatefulWidget {
     this.initialReport,
     this.customStudioPlayer,
     this.customStudioVideoController,
+    this.initialStudioMode,
   });
 
   static String computeLiveSmpte(
@@ -122,6 +126,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isDirty = false;
 
   String? _mediaFolderPath;
+  List<ScannedFile>? _explicitScannedFiles;
   bool _renameMetadata = true;
 
   DryRunReport? _report;
@@ -138,7 +143,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   DryRunReport? _previousReportBeforePaste;
 
-  bool _isStudioMode = false;
+  bool _isStudioMode = true;
   RenameProposal? _selectedStudioClip;
   Player? _studioPlayer;
   VideoController? _studioVideoController;
@@ -206,6 +211,22 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isStudioSaving = false;
   bool _isStudioPendingSave = false;
   Duration _lastStudioPlaybackPosition = Duration.zero;
+  double? _userStudioMediaWidth;
+  double? _userStudioConventionWidth;
+  final ValueNotifier<bool> _studioActiveIsProxyNotifier = ValueNotifier<bool>(
+    true,
+  );
+  final ValueNotifier<String?> _studioLinkedProxyPathNotifier =
+      ValueNotifier<String?>(null);
+  final ValueNotifier<String?> _studioPlaybackErrorNotifier =
+      ValueNotifier<String?>(null);
+
+  ValueNotifier<bool> get studioActiveIsProxyNotifier =>
+      _studioActiveIsProxyNotifier;
+  ValueNotifier<String?> get studioLinkedProxyPathNotifier =>
+      _studioLinkedProxyPathNotifier;
+  ValueNotifier<String?> get studioPlaybackErrorNotifier =>
+      _studioPlaybackErrorNotifier;
 
   final FocusNode _conventionEditorFocusNode = FocusNode(
     debugLabel: 'conventionEditor',
@@ -374,7 +395,8 @@ class _HomeScreenState extends State<HomeScreen>
   List<RenameProposal> get reportProposals => _report?.proposals ?? [];
 
   @visibleForTesting
-  Future<void> checkAndSyncTimecodes(DryRunReport report) => _checkAndSyncTimecodes(report);
+  Future<void> checkAndSyncTimecodes(DryRunReport report) =>
+      _checkAndSyncTimecodes(report);
 
   final TextEditingController _reelController = TextEditingController(
     text: '001',
@@ -398,11 +420,21 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    if (widget.initialStudioMode != null) {
+      _isStudioMode = widget.initialStudioMode!;
+    }
     if (widget.initialProject != null) {
       _project = widget.initialProject!;
     }
     if (widget.initialReport != null) {
       _report = widget.initialReport;
+      if (_isStudioMode && _selectedStudioClip == null) {
+        final clips =
+            _report!.proposals.where((p) => !p.isCompanionFile).toList();
+        if (clips.isNotEmpty) {
+          _selectedStudioClip = clips.first;
+        }
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _evaluateConventionMatches();
       });
@@ -463,6 +495,36 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         );
       }
+      try {
+        _studioSubscriptions.add(
+          _studioPlayer!.stream.tracks.listen((tracks) {
+            if (_selectedStudioClip != null) {
+              final path = _selectedStudioClip!.originalFilePath;
+              if (path != null) {
+                final proxy = _studioLinkedProxyPathNotifier.value;
+                final useProxy =
+                    proxy != null && _studioActiveIsProxyNotifier.value;
+                if (!useProxy && MediaProxyUtils.isCanonRaw(path)) {
+                  try {
+                    final platform = _studioPlayer?.platform;
+                    if (platform != null) {
+                      try {
+                        (platform as dynamic).setProperty('vid', 'no');
+                      } catch (_) {}
+                    }
+                  } catch (_) {}
+                  try {
+                    _studioPlayer?.setVideoTrack(VideoTrack.no());
+                  } catch (_) {}
+                  try {
+                    _studioPlayer?.setVolume(100.0);
+                  } catch (_) {}
+                }
+              }
+            }
+          }),
+        );
+      } catch (_) {}
       _studioSubscriptions.add(
         _studioPlayer!.stream.playing.listen((p) {
           if (mounted) _studioIsPlayingNotifier.value = p;
@@ -485,6 +547,15 @@ class _HomeScreenState extends State<HomeScreen>
           if (mounted) {
             _studioVolumeNotifier.value = vol;
             _studioIsMutedNotifier.value = vol <= 0.0;
+          }
+        }),
+      );
+      _studioSubscriptions.add(_studioPlayer!.stream.log.listen((_) {}));
+      _studioSubscriptions.add(
+        _studioPlayer!.stream.error.listen((err) {
+          if (mounted) {
+            _studioPlaybackErrorNotifier.value = err;
+            setState(() {});
           }
         }),
       );
@@ -602,6 +673,75 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  void _playStudioMedia(
+    String path, {
+    Duration? seekPosition,
+    bool forceDirectMaster = false,
+  }) {
+    final proxy = MediaProxyUtils.findLinkedProxyPath(path);
+    _studioLinkedProxyPathNotifier.value = proxy;
+
+    final bool useProxy =
+        proxy != null &&
+        _studioActiveIsProxyNotifier.value &&
+        !forceDirectMaster;
+    final String mediaToPlay = useProxy ? proxy : path;
+    final bool isCrmDirect = MediaProxyUtils.isCanonRaw(mediaToPlay);
+
+    if (_studioPlayer == null) {
+      _initStudioPlayer();
+    }
+
+    try {
+      final platform = _studioPlayer?.platform;
+      if (isCrmDirect) {
+        if (platform != null) {
+          try {
+            (platform as dynamic).setProperty('vid', 'no');
+          } catch (_) {}
+        }
+        try {
+          _studioPlayer?.setVideoTrack(VideoTrack.no());
+        } catch (_) {}
+      } else {
+        if (platform != null) {
+          try {
+            (platform as dynamic).setProperty('vid', 'auto');
+          } catch (_) {}
+        }
+        try {
+          _studioPlayer?.setVideoTrack(VideoTrack.auto());
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    try {
+      _studioPlayer?.open(Media(mediaToPlay)).then((_) {
+        if (isCrmDirect) {
+          try {
+            final platform = _studioPlayer?.platform;
+            if (platform != null) {
+              try {
+                (platform as dynamic).setProperty('vid', 'no');
+              } catch (_) {}
+            }
+          } catch (_) {}
+          try {
+            _studioPlayer?.setVideoTrack(VideoTrack.no());
+          } catch (_) {}
+          try {
+            _studioPlayer?.setVolume(100.0);
+          } catch (_) {}
+        }
+        if (seekPosition != null && seekPosition > Duration.zero) {
+          _studioPlayer?.seek(seekPosition);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error playing studio media: $e');
+    }
+  }
+
   void _restoreStudioPlayerIfNeeded() {
     if (_selectedStudioClip == null) return;
     final path = _selectedStudioClip!.originalFilePath;
@@ -609,18 +749,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (!File(path).existsSync() && !path.startsWith('/media/')) return;
 
-    if (_studioPlayer == null) {
-      _initStudioPlayer();
-    }
-    try {
-      _studioPlayer?.open(Media(path)).then((_) {
-        if (_lastStudioPlaybackPosition > Duration.zero) {
-          _studioPlayer?.seek(_lastStudioPlaybackPosition);
-        }
-      });
-    } catch (e) {
-      debugPrint('Error restoring studio player: $e');
-    }
+    _playStudioMedia(path, seekPosition: _lastStudioPlaybackPosition);
   }
 
   @override
@@ -657,6 +786,9 @@ class _HomeScreenState extends State<HomeScreen>
     _studioIsPlayingNotifier.dispose();
     _studioVolumeNotifier.dispose();
     _studioIsMutedNotifier.dispose();
+    _studioActiveIsProxyNotifier.dispose();
+    _studioLinkedProxyPathNotifier.dispose();
+    _studioPlaybackErrorNotifier.dispose();
     _studioChapterController.dispose();
     _studioSceneController.dispose();
     _studioPlaneController.dispose();
@@ -1026,6 +1158,7 @@ class _HomeScreenState extends State<HomeScreen>
   ) async {
     setState(() {
       _mediaFolderPath = folderPath;
+      _explicitScannedFiles = null;
       _manualOverrides = {};
       _baseReport = null;
 
@@ -1113,10 +1246,11 @@ class _HomeScreenState extends State<HomeScreen>
 
     try {
       final history = await RenameService.readRenameHistory(_mediaFolderPath!);
-      final scannedFiles = MediaScannerService.scanDirectory(
-        _mediaFolderPath!,
-        searchSubdirectories: true,
-      );
+      final scannedFiles = _explicitScannedFiles ??
+          MediaScannerService.scanDirectory(
+            _mediaFolderPath!,
+            searchSubdirectories: true,
+          );
 
       // Check Sony M01 metadata files if undecided
       if (_project.hasConfirmedM01Sidecars == null &&
@@ -1185,6 +1319,21 @@ class _HomeScreenState extends State<HomeScreen>
         _baseReport = baseReport;
         _report = report;
         _renameHistory = history;
+        if (_isStudioMode) {
+          final clips =
+              report.proposals.where((p) => !p.isCompanionFile).toList();
+          if (clips.isNotEmpty &&
+              (_selectedStudioClip == null ||
+                  !clips.any((c) =>
+                      c.originalFilePath ==
+                      _selectedStudioClip!.originalFilePath))) {
+            _selectedStudioClip = clips.first;
+            final path = clips.first.originalFilePath;
+            if (path != null && _isPlayableVideo(path)) {
+              _playStudioMedia(path);
+            }
+          }
+        }
       });
       _evaluateConventionMatches();
     } catch (e) {
@@ -1510,7 +1659,7 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-    bool _doReelsMatchForCamera({
+  bool _doReelsMatchForCamera({
     required String? lineReel,
     required String clipReel,
     required String? clipFilePath,
@@ -1563,7 +1712,8 @@ class _HomeScreenState extends State<HomeScreen>
       if (lCam == null) {
         if (_project.activeCamera.toUpperCase() == 'ALL') {
           return true;
-        } else if (cCam == null || cCam == _project.activeCamera.toUpperCase()) {
+        } else if (cCam == null ||
+            cCam == _project.activeCamera.toUpperCase()) {
           return true;
         }
       }
@@ -2016,10 +2166,24 @@ class _HomeScreenState extends State<HomeScreen>
       final comp = proposals[j];
       if (comp.isCompanionFile && comp.originalFilePath != null) {
         final compBase = p.basenameWithoutExtension(comp.originalFilePath!);
-        if (compBase == origBase) {
+        final isGoProMatch =
+            origBase.toUpperCase().startsWith('GX') &&
+            compBase.toUpperCase().startsWith('GL') &&
+            origBase.length >= 8 &&
+            compBase.length >= 8 &&
+            origBase.substring(2) == compBase.substring(2);
+        final isSonyM01 =
+            compBase.toUpperCase() == '${origBase.toUpperCase()}M01';
+        final isMatched =
+            comp.companionFilePath == origVideoPath ||
+            compBase == origBase ||
+            isSonyM01 ||
+            isGoProMatch;
+        if (isMatched) {
           final compExt = p.extension(comp.originalFilePath!);
+          final suffix = isSonyM01 ? 'M01' : '';
           proposals[j] = comp.copyWith(
-            proposedFileName: '$newProposedBase$compExt',
+            proposedFileName: '$newProposedBase$suffix$compExt',
             status: ProposalStatus.ready,
           );
         }
@@ -2115,9 +2279,7 @@ class _HomeScreenState extends State<HomeScreen>
     final matchedCount = _livePastedOverrides.keys
         .where((k) => !_duplicateClipConflicts.containsKey(k))
         .length;
-    final unappliedCount = mediaClips
-        .where(_hasUnappliedTextOverride)
-        .length;
+    final unappliedCount = mediaClips.where(_hasUnappliedTextOverride).length;
     final isApplied = unappliedCount == 0 && matchedCount > 0;
 
     final theme = Theme.of(context);
@@ -2373,10 +2535,13 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FilledButton.icon(
                             icon: Icon(
                               isApplied ? Icons.check_circle : Icons.check,
                               size: 16,
@@ -2386,23 +2551,23 @@ class _HomeScreenState extends State<HomeScreen>
                               unappliedCount > 0
                                   ? 'Aplicar Coincidencias ($unappliedCount)'
                                   : (matchedCount > 0
-                                      ? 'Coincidencias Aplicadas ($matchedCount)'
-                                      : 'Aplicar Coincidencias (0)'),
+                                        ? 'Coincidencias Aplicadas ($matchedCount)'
+                                        : 'Aplicar Coincidencias (0)'),
                             ),
                             onPressed: unappliedCount > 0
                                 ? _applyNonBlockingMatches
                                 : null,
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.undo, size: 16),
-                          label: const Text('Deshacer'),
-                          onPressed: _previousReportBeforePaste != null
-                              ? _undoPastedMatches
-                              : null,
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.undo, size: 16),
+                            label: const Text('Deshacer'),
+                            onPressed: _previousReportBeforePaste != null
+                                ? _undoPastedMatches
+                                : null,
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -2417,7 +2582,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isPlayableVideo(String? filePath) {
     if (filePath == null) return false;
     final ext = p.extension(filePath).toLowerCase();
-    return ['.mp4', '.mov', '.mxf'].contains(ext);
+    return ['.mp4', '.mov', '.mxf', '.crm', '.lrv', '.wav'].contains(ext);
   }
 
   void _openMediaPreview(RenameProposal proposal) {
@@ -2586,16 +2751,11 @@ class _HomeScreenState extends State<HomeScreen>
 
     _highlightMatchingConventionLine(proposal);
 
+    _studioPlaybackErrorNotifier.value = null;
+
     final path = proposal.originalFilePath;
     if (path != null && _isPlayableVideo(path)) {
-      if (_studioPlayer == null) {
-        _initStudioPlayer();
-      }
-      try {
-        _studioPlayer?.open(Media(path));
-      } catch (e) {
-        debugPrint('Error playing studio media: $e');
-      }
+      _playStudioMedia(path);
     }
   }
 
@@ -2719,8 +2879,9 @@ class _HomeScreenState extends State<HomeScreen>
     final detectedCamera = clip.originalFilePath != null
         ? ClipMatcherService.extractCamera(
             clip.originalFilePath!,
-            fallback:
-                _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
+            fallback: _project.activeCamera == 'ALL'
+                ? 'A'
+                : _project.activeCamera,
           )
         : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
 
@@ -2729,9 +2890,7 @@ class _HomeScreenState extends State<HomeScreen>
         ClipMatcherService.extractReel(clip.originalFilePath ?? '');
     final defaultReel = _reelController.text.trim().isNotEmpty
         ? _reelController.text.trim()
-        : (fileReel ??
-              clip.associatedRecord?.reel ??
-              '${detectedCamera}001');
+        : (fileReel ?? clip.associatedRecord?.reel ?? '${detectedCamera}001');
 
     final capText = _studioChapterController.text.trim();
     final cap = _project.showChapter
@@ -2801,7 +2960,9 @@ class _HomeScreenState extends State<HomeScreen>
 
     String? normalizedClip;
     final recClip = clip.associatedRecord?.cameras
-        .where((c) => c.cameraName.toUpperCase() == detectedCamera.toUpperCase())
+        .where(
+          (c) => c.cameraName.toUpperCase() == detectedCamera.toUpperCase(),
+        )
         .firstOrNull
         ?.clipName;
     final candidateClip = (recClip != null && recClip.trim().isNotEmpty)
@@ -2815,7 +2976,8 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     final reelText = _studioReelController.text.trim();
-    final effectiveReel = fileReel ?? (reelText.isNotEmpty ? reelText : defaultReel);
+    final effectiveReel =
+        fileReel ?? (reelText.isNotEmpty ? reelText : defaultReel);
 
     final base = ConventionNameGenerator.generate(
       nomenclature: prod,
@@ -2826,7 +2988,10 @@ class _HomeScreenState extends State<HomeScreen>
       scene: scene,
       plane: plane,
       take: rawTake,
-      reel: ConventionGeneratorService.formatReelWithCamera(effectiveReel, detectedCamera),
+      reel: ConventionGeneratorService.formatReelWithCamera(
+        effectiveReel,
+        detectedCamera,
+      ),
       day: day,
       clipIndex: normalizedClip,
       unit: unit,
@@ -2863,11 +3028,13 @@ class _HomeScreenState extends State<HomeScreen>
     final camera = clip.originalFilePath != null
         ? ClipMatcherService.extractCamera(
             clip.originalFilePath!,
-            fallback:
-                _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
+            fallback: _project.activeCamera == 'ALL'
+                ? 'A'
+                : _project.activeCamera,
           )
         : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
-    final fileReel = clip.fileReel ??
+    final fileReel =
+        clip.fileReel ??
         ClipMatcherService.extractReel(clip.originalFilePath ?? '');
     final effectiveReel = fileReel ?? reel;
     final clipNum = ClipMatcherService.extractClipNumber(
@@ -3008,8 +3175,9 @@ class _HomeScreenState extends State<HomeScreen>
       final effectiveCamera = prop.originalFilePath != null
           ? ClipMatcherService.extractCamera(
               prop.originalFilePath!,
-              fallback:
-                  _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
+              fallback: _project.activeCamera == 'ALL'
+                  ? 'A'
+                  : _project.activeCamera,
             )
           : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
 
@@ -3034,10 +3202,7 @@ class _HomeScreenState extends State<HomeScreen>
           );
         } else {
           updatedCameras.add(
-            CameraTakeRecord(
-              cameraName: effectiveCamera,
-              clipName: clipNum,
-            ),
+            CameraTakeRecord(cameraName: effectiveCamera, clipName: clipNum),
           );
         }
 
@@ -3058,10 +3223,7 @@ class _HomeScreenState extends State<HomeScreen>
           plane: plane.isNotEmpty ? plane : null,
           take: take.isNotEmpty ? take : '1',
           cameras: [
-            CameraTakeRecord(
-              cameraName: effectiveCamera,
-              clipName: clipNum,
-            ),
+            CameraTakeRecord(cameraName: effectiveCamera, clipName: clipNum),
           ],
           reel: targetReel,
           tcIn: prop.fileTcIn,
@@ -3113,7 +3275,9 @@ class _HomeScreenState extends State<HomeScreen>
           _livePastedOverrides.remove(prop.originalFilePath!);
           _livePastedLineNumbers.remove(prop.originalFilePath!);
         }
-        final rawLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+        final rawLines = _conventionEditorController.text.split(
+          RegExp(r'\r?\n'),
+        );
         final lines = List<String>.from(rawLines);
         while (lines.length < clipIdx) {
           lines.add('');
@@ -3180,7 +3344,9 @@ class _HomeScreenState extends State<HomeScreen>
             c.clipName == clipNum &&
             c.cameraName.toUpperCase() == detectedCamera.toUpperCase(),
       );
-      if (hadMatchingCam || (clip.associatedRecord != null && rec.id == clip.associatedRecord!.id)) {
+      if (hadMatchingCam ||
+          (clip.associatedRecord != null &&
+              rec.id == clip.associatedRecord!.id)) {
         final updatedCameras = rec.cameras.where((c) {
           if (c.clipName == clipNum &&
               c.cameraName.toUpperCase() == detectedCamera.toUpperCase()) {
@@ -3216,10 +3382,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (recordUpdated) {
       _project = _project.copyWith(
-        log: ShootingLog(
-          metadata: _project.log.metadata,
-          records: records,
-        ),
+        log: ShootingLog(metadata: _project.log.metadata, records: records),
       );
       _isDirty = true;
     }
@@ -3326,9 +3489,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     final clips = _studioMediaClips;
     final clipIdx =
-        clips.indexWhere(
-          (c) => c.originalFilePath == clip.originalFilePath,
-        ) +
+        clips.indexWhere((c) => c.originalFilePath == clip.originalFilePath) +
         1;
     if (clipIdx > 0) {
       final convName = ConventionGeneratorService.generateConventionName(
@@ -3470,10 +3631,14 @@ class _HomeScreenState extends State<HomeScreen>
       return clip.companionFilePath;
     }
     if (_report == null || clip.originalFilePath == null) return null;
-    final videoStem = p.basenameWithoutExtension(clip.originalFilePath!).toUpperCase();
+    final videoStem = p
+        .basenameWithoutExtension(clip.originalFilePath!)
+        .toUpperCase();
     for (final pItem in _report!.proposals) {
       if (pItem.isCompanionFile && pItem.originalFilePath != null) {
-        final xmlStem = p.basenameWithoutExtension(pItem.originalFilePath!).toUpperCase();
+        final xmlStem = p
+            .basenameWithoutExtension(pItem.originalFilePath!)
+            .toUpperCase();
         if (xmlStem == videoStem ||
             xmlStem == '${videoStem}M01' ||
             videoStem == '${xmlStem}M01' ||
@@ -3491,15 +3656,23 @@ class _HomeScreenState extends State<HomeScreen>
     final xmlBasename = hasXml ? p.basename(companionPath) : null;
 
     return Tooltip(
-      message: hasXml ? 'Sidecar XML: $xmlBasename' : 'Sin archivo XML complementario',
+      message: hasXml
+          ? 'Sidecar XML: $xmlBasename'
+          : 'Sin archivo XML complementario',
       child: Container(
-        key: ValueKey('xml_badge_${clip.originalFilePath ?? clip.proposedFileName}'),
+        key: ValueKey(
+          'xml_badge_${clip.originalFilePath ?? clip.proposedFileName}',
+        ),
         margin: const EdgeInsets.only(left: 6),
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
         decoration: BoxDecoration(
           color: hasXml
-              ? (isDark ? Colors.green.shade900.withValues(alpha: 0.35) : Colors.green.shade50)
-              : (isDark ? Colors.grey.shade800.withValues(alpha: 0.3) : Colors.grey.shade200),
+              ? (isDark
+                    ? Colors.green.shade900.withValues(alpha: 0.35)
+                    : Colors.green.shade50)
+              : (isDark
+                    ? Colors.grey.shade800.withValues(alpha: 0.3)
+                    : Colors.grey.shade200),
           borderRadius: BorderRadius.circular(4),
           border: Border.all(
             color: hasXml
@@ -3515,8 +3688,8 @@ class _HomeScreenState extends State<HomeScreen>
               Icons.description_outlined,
               size: 11,
               color: hasXml
-                ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
-                : theme.hintColor,
+                  ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+                  : theme.hintColor,
             ),
             const SizedBox(width: 3),
             Text(
@@ -3533,6 +3706,139 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  Widget _buildCompanionBadges(
+    RenameProposal clip,
+    ThemeData theme,
+    bool isDark,
+  ) {
+    final List<Widget> badges = [];
+
+    // 1. XML badge (preserves original key and structure for existing tests)
+    badges.add(_buildXmlBadge(clip, theme, isDark));
+
+    // 2. Discover companion files
+    if (_report != null && clip.originalFilePath != null) {
+      final clipPath = clip.originalFilePath!;
+      final companions = _report!.proposals
+          .where((p) => p.isCompanionFile && (p.companionFilePath == clipPath))
+          .toList();
+
+      bool hasLrv = false;
+      bool hasThm = false;
+      int extraCount = 0;
+
+      for (final comp in companions) {
+        final ext = p
+            .extension(comp.originalFilePath ?? comp.proposedFileName)
+            .toLowerCase();
+        if (ext == '.lrv') {
+          hasLrv = true;
+        } else if (ext == '.thm') {
+          hasThm = true;
+        } else if (ext != '.xml') {
+          extraCount++;
+        }
+      }
+
+      if (hasLrv) {
+        badges.add(const SizedBox(width: 4));
+        badges.add(
+          Tooltip(
+            message: 'Proxy de cámara vinculado (.LRV)',
+            child: Container(
+              key: ValueKey(
+                'lrv_badge_${clip.originalFilePath ?? clip.proposedFileName}',
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? const Color(0xFF064E3B).withValues(alpha: 0.4)
+                    : const Color(0xFFD1FAE5),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: isDark
+                      ? const Color(0xFF059669)
+                      : const Color(0xFF10B981),
+                  width: 0.8,
+                ),
+              ),
+              child: Text(
+                'LRV',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: isDark
+                      ? const Color(0xFF34D399)
+                      : const Color(0xFF047857),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      if (hasThm) {
+        badges.add(const SizedBox(width: 4));
+        badges.add(
+          Tooltip(
+            message: 'Miniatura de cámara vinculada (.THM)',
+            child: Container(
+              key: ValueKey(
+                'thm_badge_${clip.originalFilePath ?? clip.proposedFileName}',
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? const Color(0xFF78350F).withValues(alpha: 0.35)
+                    : const Color(0xFFFEF3C7),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: isDark
+                      ? const Color(0xFFD97706)
+                      : const Color(0xFFF59E0B),
+                  width: 0.8,
+                ),
+              ),
+              child: Text(
+                'THM',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: isDark
+                      ? const Color(0xFFFBBF24)
+                      : const Color(0xFFB45309),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      if (extraCount > 0) {
+        badges.add(const SizedBox(width: 4));
+        badges.add(
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1.5),
+            decoration: BoxDecoration(
+              color: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '+$extraCount',
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                color: isDark ? Colors.white70 : Colors.black87,
+              ),
+            ),
+          ),
+        );
+      }
+    }
+
+    return Row(mainAxisSize: MainAxisSize.min, children: badges);
   }
 
   Widget _buildStudioFileDetailsHeader(
@@ -3554,7 +3860,8 @@ class _HomeScreenState extends State<HomeScreen>
         if (file.existsSync()) {
           final bytes = file.lengthSync();
           if (bytes >= 1024 * 1024 * 1024) {
-            formattedSize = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+            formattedSize =
+                '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
           } else if (bytes >= 1024 * 1024) {
             formattedSize = '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
           } else if (bytes >= 1024) {
@@ -3576,7 +3883,9 @@ class _HomeScreenState extends State<HomeScreen>
 
     final companionPath = _findCompanionXmlPath(clip);
     final hasXml = companionPath != null;
-    final xmlText = hasXml ? 'Sidecar: ${p.basename(companionPath)}' : 'Sin archivo XML';
+    final xmlText = hasXml
+        ? 'Sidecar: ${p.basename(companionPath)}'
+        : 'Sin archivo XML';
 
     final textStyle = TextStyle(
       fontSize: 10.5,
@@ -3588,7 +3897,9 @@ class _HomeScreenState extends State<HomeScreen>
       key: const ValueKey('studio_file_details_header'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surfaceContainerHighest : Colors.grey.shade100,
+        color: isDark
+            ? theme.colorScheme.surfaceContainerHighest
+            : Colors.grey.shade100,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: theme.dividerColor.withValues(alpha: 0.2),
@@ -3605,7 +3916,11 @@ class _HomeScreenState extends State<HomeScreen>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.folder_open, size: 13, color: theme.colorScheme.primary),
+                Icon(
+                  Icons.folder_open,
+                  size: 13,
+                  color: theme.colorScheme.primary,
+                ),
                 const SizedBox(width: 4),
                 Text(folderName, style: textStyle),
               ],
@@ -3642,7 +3957,9 @@ class _HomeScreenState extends State<HomeScreen>
                   xmlText,
                   style: textStyle.copyWith(
                     color: hasXml
-                        ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+                        ? (isDark
+                              ? Colors.green.shade300
+                              : Colors.green.shade700)
                         : theme.hintColor,
                     fontWeight: hasXml ? FontWeight.w600 : FontWeight.normal,
                   ),
@@ -3717,17 +4034,12 @@ class _HomeScreenState extends State<HomeScreen>
       if (emptyTcRecordsToUpdate.containsKey(r.id)) {
         final pair = emptyTcRecordsToUpdate[r.id]!;
         updatedAny = true;
-        return r.copyWith(
-          tcIn: pair.$1,
-          tcOut: pair.$2 ?? r.tcOut,
-        );
-      } else if (shouldUpdateDiffering && differingTcRecordsToUpdate.containsKey(r.id)) {
+        return r.copyWith(tcIn: pair.$1, tcOut: pair.$2 ?? r.tcOut);
+      } else if (shouldUpdateDiffering &&
+          differingTcRecordsToUpdate.containsKey(r.id)) {
         final pair = differingTcRecordsToUpdate[r.id]!;
         updatedAny = true;
-        return r.copyWith(
-          tcIn: pair.$1,
-          tcOut: pair.$2 ?? r.tcOut,
-        );
+        return r.copyWith(tcIn: pair.$1, tcOut: pair.$2 ?? r.tcOut);
       }
       return r;
     }).toList();
@@ -3906,9 +4218,7 @@ class _HomeScreenState extends State<HomeScreen>
                                                     vertical: 1,
                                                   ),
                                               decoration: BoxDecoration(
-                                                color: theme
-                                                    .colorScheme
-                                                    .primary
+                                                color: theme.colorScheme.primary
                                                     .withValues(
                                                       alpha: isDark
                                                           ? 0.3
@@ -3929,9 +4239,8 @@ class _HomeScreenState extends State<HomeScreen>
                                                 style: TextStyle(
                                                   fontSize: 10,
                                                   fontWeight: FontWeight.bold,
-                                                  color: theme
-                                                      .colorScheme
-                                                      .primary,
+                                                  color:
+                                                      theme.colorScheme.primary,
                                                 ),
                                               ),
                                             ),
@@ -3952,7 +4261,11 @@ class _HomeScreenState extends State<HomeScreen>
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
-                                          _buildXmlBadge(clip, theme, isDark),
+                                          _buildCompanionBadges(
+                                            clip,
+                                            theme,
+                                            isDark,
+                                          ),
                                         ],
                                       ),
                                       const SizedBox(height: 2),
@@ -3965,7 +4278,8 @@ class _HomeScreenState extends State<HomeScreen>
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
-                                      if (clip.status == ProposalStatus.alreadyRenamed) ...[
+                                      if (clip.status ==
+                                          ProposalStatus.alreadyRenamed) ...[
                                         const SizedBox(height: 2),
                                         Text(
                                           _getOriginalClipSubtitle(clip),
@@ -3977,7 +4291,8 @@ class _HomeScreenState extends State<HomeScreen>
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                         ),
-                                      ] else if (clip.status == ProposalStatus.ready &&
+                                      ] else if (clip.status ==
+                                              ProposalStatus.ready &&
                                           clip.proposedFileName.toLowerCase() !=
                                               fileName.toLowerCase()) ...[
                                         const SizedBox(height: 2),
@@ -4010,6 +4325,798 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  String _formatFileSize(String? filePath) {
+    if (filePath == null) return '—';
+    try {
+      final file = File(filePath);
+      if (file.existsSync()) {
+        final bytes = file.lengthSync();
+        if (bytes >= 1024 * 1024 * 1024) {
+          return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+        } else if (bytes >= 1024 * 1024) {
+          return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+        } else if (bytes >= 1024) {
+          return '${(bytes / 1024).toStringAsFixed(0)} KB';
+        } else {
+          return '$bytes B';
+        }
+      }
+    } catch (_) {}
+    return '—';
+  }
+
+  Widget _buildStudioBroadcastSlateMonitor(
+    RenameProposal? clip,
+    ThemeData theme,
+    bool isDark, {
+    bool isCanonRaw = false,
+    bool isWav = false,
+    String? playbackError,
+  }) {
+    if (clip == null) return const SizedBox.shrink();
+    final originalPath = clip.originalFilePath;
+    final originalName = originalPath != null
+        ? p.basename(originalPath)
+        : 'Clip';
+    final ext = originalPath != null
+        ? p.extension(originalPath).toUpperCase()
+        : '';
+    final formattedSize = _formatFileSize(originalPath);
+    final tcIn = clip.fileTcIn ?? '?';
+    final tcOut = clip.fileTcOut ?? '?';
+    final posterFrame = MediaProxyUtils.findPosterFrame(originalPath);
+
+    final bgColor = isDark ? const Color(0xFF0C0E14) : const Color(0xFFF8FAFC);
+    final cardBorderColor = isDark
+        ? const Color(0xFF1E2230)
+        : const Color(0xFFE2E8F0);
+    final cardBgColor = isDark ? const Color(0xFF121520) : Colors.white;
+
+    final Key hudKey = isCanonRaw
+        ? const ValueKey('studio_canon_raw_hud')
+        : (isWav
+              ? const ValueKey('studio_audio_raw_hud')
+              : const ValueKey('studio_broadcast_slate_monitor'));
+
+    final cardContent = Container(
+      key: hudKey,
+      constraints: const BoxConstraints(maxWidth: 580),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      decoration: BoxDecoration(
+        color: posterFrame != null
+            ? (isDark
+                  ? const Color(0xFF121520).withValues(alpha: 0.88)
+                  : Colors.white.withValues(alpha: 0.94))
+            : cardBgColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isCanonRaw
+              ? (isDark
+                    ? Colors.amber.shade500.withValues(alpha: 0.6)
+                    : const Color(0xFFD97706).withValues(alpha: 0.6))
+              : (isWav
+                    ? (isDark
+                          ? const Color(0xFF00E5FF).withValues(alpha: 0.5)
+                          : const Color(0xFF0284C7))
+                    : cardBorderColor),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: isDark
+                ? Colors.black.withValues(alpha: 0.45)
+                : Colors.black.withValues(alpha: 0.04),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          if (isCanonRaw)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDark
+                    ? Colors.amber.shade900.withValues(alpha: 0.35)
+                    : const Color(0xFFFEF3C7),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.amber.shade500
+                      : const Color(0xFFD97706),
+                  width: 2,
+                ),
+              ),
+              child: Icon(
+                Icons.camera_alt_outlined,
+                size: 46,
+                color: isDark ? Colors.amber.shade300 : const Color(0xFFB45309),
+              ),
+            )
+          else if (isWav)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDark
+                    ? const Color(0xFF00E5FF).withValues(alpha: 0.12)
+                    : const Color(0xFFE0F2FE),
+                border: Border.all(
+                  color: isDark
+                      ? const Color(0xFF00E5FF).withValues(alpha: 0.5)
+                      : const Color(0xFF38BDF8),
+                  width: 2,
+                ),
+              ),
+              child: const Icon(
+                Icons.audiotrack_rounded,
+                size: 46,
+                color: Color(0xFF00E5FF),
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDark
+                    ? const Color(0xFF00E5FF).withValues(alpha: 0.12)
+                    : const Color(0xFFE0F2FE),
+                border: Border.all(
+                  color: isDark
+                      ? const Color(0xFF00E5FF).withValues(alpha: 0.35)
+                      : const Color(0xFF38BDF8),
+                  width: 2,
+                ),
+              ),
+              child: Icon(
+                Icons.movie_filter_outlined,
+                size: 44,
+                color: isDark
+                    ? const Color(0xFF00E5FF)
+                    : const Color(0xFF0284C7),
+              ),
+            ),
+          const SizedBox(height: 14),
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: isCanonRaw
+                ? [
+                    Container(
+                      key: const ValueKey('studio_canon_raw_badge'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.amber.shade900.withValues(alpha: 0.35)
+                            : const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.amber.shade500.withValues(alpha: 0.8)
+                              : const Color(0xFFD97706),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Text(
+                        '[CANON CINEMA RAW LIGHT]',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10,
+                          letterSpacing: 1.1,
+                          color: isDark
+                              ? Colors.amber.shade300
+                              : const Color(0xFFB45309),
+                        ),
+                      ),
+                    ),
+                    Container(
+                      key: const ValueKey('studio_smpte_live_badge'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? const Color(0xFF00E5FF).withValues(alpha: 0.15)
+                            : const Color(0xFFE0F7FA),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: isDark
+                              ? const Color(0xFF00E5FF).withValues(alpha: 0.7)
+                              : const Color(0xFF00838F),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Text(
+                        '[AUDIO & TIMECODE SMPTE EN VIVO]',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10,
+                          letterSpacing: 1.1,
+                          color: isDark
+                              ? const Color(0xFF00E5FF)
+                              : const Color(0xFF006064),
+                        ),
+                      ),
+                    ),
+                  ]
+                : (isWav
+                      ? [
+                          Container(
+                            key: const ValueKey('studio_format_badge'),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? const Color(
+                                      0xFF00E5FF,
+                                    ).withValues(alpha: 0.15)
+                                  : const Color(0xFFE0F7FA),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: isDark
+                                    ? const Color(
+                                        0xFF00E5FF,
+                                      ).withValues(alpha: 0.7)
+                                    : const Color(0xFF00838F),
+                                width: 1.2,
+                              ),
+                            ),
+                            child: const Text(
+                              'BROADCAST WAV · BWF',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontWeight: FontWeight.bold,
+                                fontSize: 10,
+                                letterSpacing: 1.1,
+                                color: Color(0xFF00E5FF),
+                              ),
+                            ),
+                          ),
+                        ]
+                      : [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? const Color(
+                                      0xFF00E5FF,
+                                    ).withValues(alpha: 0.12)
+                                  : const Color(0xFFE0F7FA),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: isDark
+                                    ? const Color(
+                                        0xFF00E5FF,
+                                      ).withValues(alpha: 0.6)
+                                    : const Color(0xFF00838F),
+                                width: 1.2,
+                              ),
+                            ),
+                            child: Text(
+                              '[MONITOR DE METADATOS SMPTE]',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontWeight: FontWeight.bold,
+                                fontSize: 10,
+                                letterSpacing: 1.1,
+                                color: isDark
+                                    ? const Color(0xFF00E5FF)
+                                    : const Color(0xFF006064),
+                              ),
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? Colors.amber.shade900.withValues(alpha: 0.3)
+                                  : const Color(0xFFFEF3C7),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: isDark
+                                    ? Colors.amber.shade500.withValues(
+                                        alpha: 0.6,
+                                      )
+                                    : const Color(0xFFD97706),
+                                width: 1.2,
+                              ),
+                            ),
+                            child: Text(
+                              '[BROADCAST / RAW MONITOR]',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontWeight: FontWeight.bold,
+                                fontSize: 10,
+                                letterSpacing: 1.1,
+                                color: isDark
+                                    ? Colors.amber.shade300
+                                    : const Color(0xFFB45309),
+                              ),
+                            ),
+                          ),
+                        ]),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            originalName,
+            style: TextStyle(
+              color: isDark ? Colors.white : const Color(0xFF0F172A),
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+              letterSpacing: 0.5,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.insert_drive_file_outlined,
+                size: 14,
+                color: isDark ? Colors.white60 : const Color(0xFF64748B),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'Tamaño: $formattedSize',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  color: isDark ? Colors.white70 : const Color(0xFF334155),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                height: 12,
+                width: 1,
+                color: isDark ? Colors.white24 : Colors.grey.shade400,
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Formato nativo: $ext',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  color: isDark ? Colors.white70 : const Color(0xFF334155),
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? const Color(0xFF00E5FF).withValues(alpha: 0.08)
+                  : const Color(0xFFF0FDF4),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: isDark
+                    ? const Color(0xFF00E5FF).withValues(alpha: 0.3)
+                    : const Color(0xFF86EFAC),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.timer_outlined,
+                  size: 14,
+                  color: isDark
+                      ? const Color(0xFF00E5FF)
+                      : const Color(0xFF16A34A),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Timecode: $tcIn \u2192 $tcOut',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.6,
+                    color: isDark
+                        ? const Color(0xFF00E5FF)
+                        : const Color(0xFF15803D),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Text(
+              isCanonRaw
+                  ? 'Reproduciendo audio nativo PCM (24-bit) y código de tiempo SMPTE sincronizado. El formato CRAW de sensor opera en modo claqueta de audio.'
+                  : (isWav
+                        ? 'Monitoreo de pistas multicanal PCM de audio de producción BWF con Timecode SMPTE sincronizado.'
+                        : 'Metadatos y Timecode SMPTE sincronizados. El códec nativo no requiere decodificación visual para reconciliación y renombrado.'),
+              style: TextStyle(
+                fontSize: 11,
+                color: isDark ? Colors.white60 : const Color(0xFF64748B),
+                height: 1.4,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          if (isCanonRaw) ...[
+            const SizedBox(height: 12),
+            ValueListenableBuilder<bool>(
+              valueListenable: _studioIsPlayingNotifier,
+              builder: (context, isPlaying, _) {
+                return ValueListenableBuilder<Duration>(
+                  valueListenable: _studioPositionNotifier,
+                  builder: (context, position, _) {
+                    return Container(
+                      key: const ValueKey('studio_craw_audio_waveform'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? const Color(0xFF080C14)
+                            : const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: isPlaying
+                              ? const Color(0xFF00E5FF).withValues(alpha: 0.4)
+                              : (isDark
+                                    ? Colors.white12
+                                    : const Color(0xFFCBD5E1)),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isPlaying
+                                ? Icons.graphic_eq
+                                : Icons.volume_mute_outlined,
+                            size: 15,
+                            color: isPlaying
+                                ? const Color(0xFF00E5FF)
+                                : Colors.white38,
+                          ),
+                          const SizedBox(width: 6),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: List.generate(14, (i) {
+                              final factor = isPlaying
+                                  ? ((math.sin(
+                                                  i * 0.7 +
+                                                      (position.inMilliseconds /
+                                                          180.0),
+                                                ) *
+                                                0.45 +
+                                            0.55))
+                                        .clamp(0.2, 1.0)
+                                  : 0.18;
+                              return Container(
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 1.5,
+                                ),
+                                width: 3,
+                                height: (18 * factor).clamp(3.0, 18.0),
+                                decoration: BoxDecoration(
+                                  color: isPlaying
+                                      ? const Color(0xFF00E5FF)
+                                      : Colors.white24,
+                                  borderRadius: BorderRadius.circular(1.5),
+                                ),
+                              );
+                            }),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            isPlaying
+                                ? 'PCM 24-BIT EN REPRODUCCIÓN'
+                                : 'AUDIO EN ESPERA',
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.bold,
+                              color: isPlaying
+                                  ? const Color(0xFF00E5FF)
+                                  : Colors.white38,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ],
+          if (isWav) ...[
+            const SizedBox(height: 12),
+            Container(
+              key: const ValueKey('studio_audio_waveform'),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? const Color(0xFF080C14)
+                    : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: isDark ? Colors.white12 : const Color(0xFFCBD5E1),
+                ),
+              ),
+              child: ValueListenableBuilder<Duration>(
+                valueListenable: _studioPositionNotifier,
+                builder: (context, position, _) {
+                  final liveSmpte = _computeLiveSmpte(
+                    position,
+                    clip.fileTcIn,
+                    _project.log.metadata.frameRate,
+                  );
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.graphic_eq,
+                        size: 15,
+                        color: Color(0xFF00E5FF),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'SMPTE: $liveSmpte',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF00E5FF),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        key: const ValueKey('studio_hud_volume'),
+                        icon: const Icon(Icons.volume_up, size: 14),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {},
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              key: const ValueKey('studio_audio_track_indicators'),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.black45 : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'CH 1 [L]',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'CH 2 [R]',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (!isCanonRaw &&
+              !isWav &&
+              playbackError != null &&
+              playbackError.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? Colors.red.shade900.withValues(alpha: 0.25)
+                      : const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.red.shade400.withValues(alpha: 0.35)
+                        : const Color(0xFFF87171).withValues(alpha: 0.6),
+                  ),
+                ),
+                child: Text(
+                  playbackError,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    color: isDark
+                        ? Colors.red.shade300
+                        : const Color(0xFF991B1B),
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+
+    final slateBody = Center(child: SingleChildScrollView(child: cardContent));
+
+    if (posterFrame != null) {
+      return Container(
+        key: hudKey,
+        color: Colors.black,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Center(
+              child: Image.file(
+                posterFrame,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) =>
+                    const SizedBox.shrink(),
+              ),
+            ),
+            // Top-left floating EVF badges
+            Positioned(
+              top: 12,
+              left: 12,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    key: const ValueKey('studio_canon_raw_badge'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isDark
+                            ? Colors.amber.shade500.withValues(alpha: 0.8)
+                            : const Color(0xFFD97706),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Text(
+                      isCanonRaw
+                          ? '[CANON RAW 2K POSTER]'
+                          : '[POSTER FRAME 2K]',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                        letterSpacing: 1.1,
+                        color: isDark
+                            ? Colors.amber.shade300
+                            : const Color(0xFFB45309),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    key: const ValueKey('studio_smpte_live_badge'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isDark
+                            ? const Color(0xFF00E5FF).withValues(alpha: 0.7)
+                            : const Color(0xFF00838F),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Text(
+                      '[AUDIO PCM 24-BIT]',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                        letterSpacing: 1.1,
+                        color: isDark
+                            ? const Color(0xFF00E5FF)
+                            : const Color(0xFF006064),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Bottom-left floating timecode pill
+            Positioned(
+              bottom: 12,
+              left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.5),
+                    width: 1.2,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.timer_outlined,
+                      size: 14,
+                      color: Color(0xFF00E5FF),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'SMPTE: $tcIn \u2192 $tcOut',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.8,
+                        color: Color(0xFF00E5FF),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(color: bgColor, child: slateBody);
   }
 
   Widget _buildStudioCenterInspector() {
@@ -4064,10 +5171,25 @@ class _HomeScreenState extends State<HomeScreen>
     final proposedName = _computeStudioProposedBanner(clip);
     final tcIn = clip.fileTcIn ?? '00:00:00:00';
     final tcOut = clip.fileTcOut ?? '00:00:00:00';
+    final originalPath = clip.originalFilePath;
+    final isCrm =
+        originalPath != null && MediaProxyUtils.isCanonRaw(originalPath);
+    final isWav =
+        originalPath != null && originalPath.toLowerCase().endsWith('.wav');
+    final playbackError = _studioPlaybackErrorNotifier.value;
+    final isDecoderErr = MediaProxyUtils.isRawDecoderError(playbackError);
+    final proxyPath = _studioLinkedProxyPathNotifier.value;
+    final hasLinkedProxy = proxyPath != null;
+    final isPlayingProxy = hasLinkedProxy && _studioActiveIsProxyNotifier.value;
+    final isCanonRawSlate =
+        (isCrm && !isPlayingProxy) || (isDecoderErr && isCrm);
+    final isSlateMonitor =
+        isCanonRawSlate || isWav || (playbackError != null && !isDecoderErr);
     final hasVideo =
-        clip.originalFilePath != null &&
-        _isPlayableVideo(clip.originalFilePath) &&
-        _studioVideoController != null;
+        originalPath != null &&
+        _isPlayableVideo(originalPath) &&
+        _studioVideoController != null &&
+        !isSlateMonitor;
 
     final hasVisibleFlags = _project.showMos || _project.showTf;
 
@@ -4181,10 +5303,7 @@ class _HomeScreenState extends State<HomeScreen>
           decoration: const InputDecoration(
             labelText: 'Reel',
             isDense: true,
-            contentPadding: EdgeInsets.symmetric(
-              horizontal: 8,
-              vertical: 8,
-            ),
+            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             border: OutlineInputBorder(),
           ),
           style: const TextStyle(fontSize: 12),
@@ -4270,185 +5389,246 @@ class _HomeScreenState extends State<HomeScreen>
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      ClipRect(
-                        child: Listener(
-                          behavior: HitTestBehavior.opaque,
-                          onPointerSignal: (pointerSignal) {
-                            if (pointerSignal is PointerScrollEvent) {
-                              if (pointerSignal.scrollDelta.dy < 0) {
-                                _studioZoomIn(
-                                  focalPoint: pointerSignal.localPosition,
-                                );
-                              } else if (pointerSignal.scrollDelta.dy > 0) {
-                                _studioZoomOut(
-                                  focalPoint: pointerSignal.localPosition,
-                                );
+                      if (isSlateMonitor)
+                        _buildStudioBroadcastSlateMonitor(
+                          clip,
+                          theme,
+                          isDark,
+                          isCanonRaw: isCanonRawSlate,
+                          isWav: isWav,
+                          playbackError: playbackError,
+                        )
+                      else ...[
+                        ClipRect(
+                          child: Listener(
+                            behavior: HitTestBehavior.opaque,
+                            onPointerSignal: (pointerSignal) {
+                              if (pointerSignal is PointerScrollEvent) {
+                                if (pointerSignal.scrollDelta.dy < 0) {
+                                  _studioZoomIn(
+                                    focalPoint: pointerSignal.localPosition,
+                                  );
+                                } else if (pointerSignal.scrollDelta.dy > 0) {
+                                  _studioZoomOut(
+                                    focalPoint: pointerSignal.localPosition,
+                                  );
+                                }
                               }
-                            }
-                          },
-                          child: GestureDetector(
-                            key: const ValueKey(
-                              'studio_video_gesture_detector',
-                            ),
-                            onTap: () =>
-                                _studioWorkspaceFocusNode.requestFocus(),
-                            onDoubleTap: _resetStudioZoom,
-                            child: MouseRegion(
-                              cursor: _studioCurrentZoom > 1.05
-                                  ? SystemMouseCursors.grab
-                                  : SystemMouseCursors.basic,
-                              onHover: (event) {
-                                _studioHoveredPointerPosition =
-                                    event.localPosition;
-                              },
-                              onExit: (_) {
-                                _studioHoveredPointerPosition = null;
-                              },
-                              child: InteractiveViewer(
-                                transformationController: _studioZoomController,
-                                minScale: 1.0,
-                                maxScale: 5.0,
-                                panEnabled: true,
-                                scaleEnabled: true,
-                                trackpadScrollCausesScale: true,
-                                boundaryMargin: const EdgeInsets.all(600),
-                                clipBehavior: Clip.none,
-                                child: Center(
-                                  child: hasVideo
-                                      ? Video(
-                                          controller: _studioVideoController!,
-                                          controls: NoVideoControls,
-                                          fit: BoxFit.contain,
-                                        )
-                                      : Container(
-                                          color: Colors.black,
-                                          child: Center(
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(
-                                                  Icons.movie_filter_rounded,
-                                                  size: 52,
-                                                  color: Colors.white38,
-                                                ),
-                                                const SizedBox(height: 8),
-                                                Text(
-                                                  originalName,
-                                                  style: const TextStyle(
-                                                    color: Colors.white70,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 13,
+                            },
+                            child: GestureDetector(
+                              key: const ValueKey(
+                                'studio_video_gesture_detector',
+                              ),
+                              onTap: () =>
+                                  _studioWorkspaceFocusNode.requestFocus(),
+                              onDoubleTap: _resetStudioZoom,
+                              child: MouseRegion(
+                                cursor: _studioCurrentZoom > 1.05
+                                    ? SystemMouseCursors.grab
+                                    : SystemMouseCursors.basic,
+                                onHover: (event) {
+                                  _studioHoveredPointerPosition =
+                                      event.localPosition;
+                                },
+                                onExit: (_) {
+                                  _studioHoveredPointerPosition = null;
+                                },
+                                child: InteractiveViewer(
+                                  transformationController:
+                                      _studioZoomController,
+                                  minScale: 1.0,
+                                  maxScale: 5.0,
+                                  panEnabled: true,
+                                  scaleEnabled: true,
+                                  trackpadScrollCausesScale: true,
+                                  boundaryMargin: const EdgeInsets.all(600),
+                                  clipBehavior: Clip.none,
+                                  child: Center(
+                                    child: hasVideo
+                                        ? Video(
+                                            controller: _studioVideoController!,
+                                            controls: NoVideoControls,
+                                            fit: BoxFit.contain,
+                                          )
+                                        : Container(
+                                            color: Colors.black,
+                                            child: Center(
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const Icon(
+                                                    Icons.movie_filter_rounded,
+                                                    size: 52,
+                                                    color: Colors.white38,
                                                   ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  'Timecode: $tcIn → $tcOut',
-                                                  style: const TextStyle(
-                                                    fontFamily: 'monospace',
-                                                    color: Colors.white54,
-                                                    fontSize: 11,
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    originalName,
+                                                    style: const TextStyle(
+                                                      color: Colors.white70,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 13,
+                                                    ),
                                                   ),
-                                                ),
-                                              ],
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    'Timecode: $tcIn → $tcOut',
+                                                    style: const TextStyle(
+                                                      fontFamily: 'monospace',
+                                                      color: Colors.white54,
+                                                      fontSize: 11,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           ),
-                                        ),
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
 
-                      // Floating Magnifier HUD Overlay
-                      Positioned(
-                        top: 10,
-                        right: 10,
-                        child: Container(
-                          key: const ValueKey('studio_magnifier_hud'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.65),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.white24),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                key: const ValueKey('studio_zoom_out_button'),
-                                icon: const Icon(
-                                  Icons.zoom_out,
-                                  size: 16,
-                                  color: Colors.white,
-                                ),
-                                tooltip: 'Alejar',
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.all(4),
-                                constraints: const BoxConstraints(),
-                                onPressed: _studioCurrentZoom > 1.05
-                                    ? _studioZoomOut
-                                    : null,
+                        if (isPlayingProxy)
+                          Positioned(
+                            top: 10,
+                            left: 10,
+                            child: Container(
+                              key: const ValueKey('studio_proxy_linked_badge'),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '${(_studioCurrentZoom * 100).round()}%',
-                                key: const ValueKey('studio_zoom_text'),
-                                style: const TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 11,
-                                  color: Colors.white,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF065F46),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: const Color(0xFF10B981),
+                                  width: 1.2,
                                 ),
-                              ),
-                              const SizedBox(width: 4),
-                              IconButton(
-                                key: const ValueKey('studio_zoom_in_button'),
-                                icon: const Icon(
-                                  Icons.zoom_in,
-                                  size: 16,
-                                  color: Colors.white,
-                                ),
-                                tooltip: 'Acercar',
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.all(4),
-                                constraints: const BoxConstraints(),
-                                onPressed: _studioCurrentZoom < 4.95
-                                    ? _studioZoomIn
-                                    : null,
-                              ),
-                              if (_studioCurrentZoom > 1.05) ...[
-                                Container(
-                                  height: 16,
-                                  width: 1,
-                                  color: Colors.white24,
-                                  margin: const EdgeInsets.symmetric(
-                                    horizontal: 4,
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Colors.black45,
+                                    blurRadius: 4,
+                                    offset: Offset(0, 2),
                                   ),
-                                ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.link,
+                                    size: 12,
+                                    color: Color(0xFF34D399),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '[PROXY VINCULADO: ${p.basename(proxyPath)}]',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFD1FAE5),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                        // Floating Magnifier HUD Overlay
+                        Positioned(
+                          top: 10,
+                          right: 10,
+                          child: Container(
+                            key: const ValueKey('studio_magnifier_hud'),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.65),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
                                 IconButton(
-                                  key: const ValueKey(
-                                    'studio_zoom_reset_button',
-                                  ),
+                                  key: const ValueKey('studio_zoom_out_button'),
                                   icon: const Icon(
-                                    Icons.restart_alt,
+                                    Icons.zoom_out,
                                     size: 16,
                                     color: Colors.white,
                                   ),
-                                  tooltip: 'Restablecer 100%',
+                                  tooltip: 'Alejar',
                                   visualDensity: VisualDensity.compact,
                                   padding: const EdgeInsets.all(4),
                                   constraints: const BoxConstraints(),
-                                  onPressed: _resetStudioZoom,
+                                  onPressed: _studioCurrentZoom > 1.05
+                                      ? _studioZoomOut
+                                      : null,
                                 ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${(_studioCurrentZoom * 100).round()}%',
+                                  key: const ValueKey('studio_zoom_text'),
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  key: const ValueKey('studio_zoom_in_button'),
+                                  icon: const Icon(
+                                    Icons.zoom_in,
+                                    size: 16,
+                                    color: Colors.white,
+                                  ),
+                                  tooltip: 'Acercar',
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.all(4),
+                                  constraints: const BoxConstraints(),
+                                  onPressed: _studioCurrentZoom < 4.95
+                                      ? _studioZoomIn
+                                      : null,
+                                ),
+                                if (_studioCurrentZoom > 1.05) ...[
+                                  Container(
+                                    height: 16,
+                                    width: 1,
+                                    color: Colors.white24,
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    key: const ValueKey(
+                                      'studio_zoom_reset_button',
+                                    ),
+                                    icon: const Icon(
+                                      Icons.restart_alt,
+                                      size: 16,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Restablecer 100%',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: const EdgeInsets.all(4),
+                                    constraints: const BoxConstraints(),
+                                    onPressed: _resetStudioZoom,
+                                  ),
+                                ],
                               ],
-                            ],
+                            ),
                           ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -4685,6 +5865,103 @@ class _HomeScreenState extends State<HomeScreen>
                               },
                             ),
                             const SizedBox(width: 6),
+                            ValueListenableBuilder<String?>(
+                              valueListenable: _studioLinkedProxyPathNotifier,
+                              builder: (context, linkedProxy, _) {
+                                if (linkedProxy == null) {
+                                  return const SizedBox.shrink();
+                                }
+                                return ValueListenableBuilder<bool>(
+                                  valueListenable: _studioActiveIsProxyNotifier,
+                                  builder: (context, activeIsProxy, _) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(right: 6),
+                                      child: Tooltip(
+                                        message: activeIsProxy
+                                            ? 'Reproduciendo proxy vinculado (clic para original)'
+                                            : 'Reproduciendo archivo maestro (clic para proxy)',
+                                        child: InkWell(
+                                          key: const ValueKey(
+                                            'studio_proxy_toggle_button',
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                          onTap: () {
+                                            if (_selectedStudioClip
+                                                    ?.originalFilePath !=
+                                                null) {
+                                              final pos =
+                                                  _studioPositionNotifier.value;
+                                              _studioActiveIsProxyNotifier
+                                                      .value =
+                                                  !activeIsProxy;
+                                              _playStudioMedia(
+                                                _selectedStudioClip!
+                                                    .originalFilePath!,
+                                                seekPosition: pos,
+                                                forceDirectMaster:
+                                                    !_studioActiveIsProxyNotifier
+                                                        .value,
+                                              );
+                                            }
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 6,
+                                              vertical: 2,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: activeIsProxy
+                                                  ? const Color(0xFF065F46)
+                                                  : const Color(0xFF1E293B),
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                              border: Border.all(
+                                                color: activeIsProxy
+                                                    ? const Color(0xFF10B981)
+                                                    : Colors.white38,
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  activeIsProxy
+                                                      ? Icons
+                                                            .high_quality_outlined
+                                                      : Icons.videocam_outlined,
+                                                  size: 11,
+                                                  color: activeIsProxy
+                                                      ? const Color(0xFF34D399)
+                                                      : Colors.white70,
+                                                ),
+                                                const SizedBox(width: 3),
+                                                Text(
+                                                  activeIsProxy
+                                                      ? 'PROXY'
+                                                      : 'ORIGINAL',
+                                                  style: TextStyle(
+                                                    fontFamily: 'monospace',
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: activeIsProxy
+                                                        ? const Color(
+                                                            0xFFD1FAE5,
+                                                          )
+                                                        : Colors.white70,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
                             // Volume toggle & slider
                             ValueListenableBuilder<bool>(
                               valueListenable: _studioIsMutedNotifier,
@@ -4835,8 +6112,9 @@ class _HomeScreenState extends State<HomeScreen>
                                 .withValues(alpha: 0.6),
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
-                              color: theme.colorScheme.secondary
-                                  .withValues(alpha: 0.4),
+                              color: theme.colorScheme.secondary.withValues(
+                                alpha: 0.4,
+                              ),
                             ),
                           ),
                           child: Text(
@@ -4851,7 +6129,9 @@ class _HomeScreenState extends State<HomeScreen>
 
                         final unlinkTakeButton = clip.associatedRecord != null
                             ? OutlinedButton.icon(
-                                key: const ValueKey('studio_unlink_take_button'),
+                                key: const ValueKey(
+                                  'studio_unlink_take_button',
+                                ),
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Colors.redAccent,
                                   side: const BorderSide(
@@ -4889,8 +6169,9 @@ class _HomeScreenState extends State<HomeScreen>
                                         .surfaceContainerHighest,
                                     borderRadius: BorderRadius.circular(4),
                                     border: Border.all(
-                                      color: theme.dividerColor
-                                          .withValues(alpha: 0.5),
+                                      color: theme.dividerColor.withValues(
+                                        alpha: 0.5,
+                                      ),
                                     ),
                                   ),
                                   child: Row(
@@ -5037,7 +6318,11 @@ class _HomeScreenState extends State<HomeScreen>
                       policy: WidgetOrderTraversalPolicy(),
                       child: Row(
                         children: [
-                          for (int i = 0; i < dynamicSlateFields.length; i++) ...[
+                          for (
+                            int i = 0;
+                            i < dynamicSlateFields.length;
+                            i++
+                          ) ...[
                             if (i > 0) const SizedBox(width: 6),
                             dynamicSlateFields[i],
                           ],
@@ -5166,13 +6451,15 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   List<RenameProposal> get _studioMediaClips {
-    final list = _report?.proposals.where((p) {
-      if (p.isCompanionFile) return false;
-      if (p.status == ProposalStatus.missingFile) return false;
-      if (p.originalFilePath == null) return false;
-      return File(p.originalFilePath!).existsSync() ||
-          p.originalFilePath!.startsWith('/media/');
-    }).toList() ?? [];
+    final list =
+        _report?.proposals.where((p) {
+          if (p.isCompanionFile) return false;
+          if (p.status == ProposalStatus.missingFile) return false;
+          if (p.originalFilePath == null) return false;
+          return File(p.originalFilePath!).existsSync() ||
+              p.originalFilePath!.startsWith('/media/');
+        }).toList() ??
+        [];
     list.sort((a, b) {
       final aNumStr = ClipMatcherService.extractClipNumber(
         a.originalFilePath ?? a.proposedFileName,
@@ -5184,8 +6471,9 @@ class _HomeScreenState extends State<HomeScreen>
       final bNum = int.tryParse(bNumStr) ?? 999999;
       final numComp = aNum.compareTo(bNum);
       if (numComp != 0) return numComp;
-      return (a.originalFilePath ?? a.proposedFileName)
-          .compareTo(b.originalFilePath ?? b.proposedFileName);
+      return (a.originalFilePath ?? a.proposedFileName).compareTo(
+        b.originalFilePath ?? b.proposedFileName,
+      );
     });
     return list;
   }
@@ -5326,8 +6614,15 @@ class _HomeScreenState extends State<HomeScreen>
           final isMediaRight = _appSettings.renamerPaneLayout == 'media_right';
 
           final widths = calculateStudioPaneWidths(totalWidth);
-          final mediaWidth = widths.mediaWidth;
-          final conventionWidth = widths.conventionWidth;
+          final mediaWidth = (_userStudioMediaWidth ?? widths.mediaWidth).clamp(
+            220.0,
+            650.0,
+          );
+          final conventionWidth =
+              (_userStudioConventionWidth ?? widths.conventionWidth).clamp(
+                340.0,
+                650.0,
+              );
 
           final mediaWidget = SizedBox(
             width: mediaWidth,
@@ -5338,21 +6633,58 @@ class _HomeScreenState extends State<HomeScreen>
           );
           final centerWidget = Expanded(child: _buildStudioCenterInspector());
 
+          final mediaSplitter = _StudioSplitterDivider(
+            onDragUpdate: (details) {
+              setState(() {
+                final current = _userStudioMediaWidth ?? mediaWidth;
+                final delta = isMediaRight
+                    ? -details.delta.dx
+                    : details.delta.dx;
+                _userStudioMediaWidth = (current + delta).clamp(220.0, 650.0);
+              });
+            },
+            onReset: () {
+              setState(() {
+                _userStudioMediaWidth = null;
+              });
+            },
+          );
+
+          final conventionSplitter = _StudioSplitterDivider(
+            onDragUpdate: (details) {
+              setState(() {
+                final current = _userStudioConventionWidth ?? conventionWidth;
+                final delta = isMediaRight
+                    ? details.delta.dx
+                    : -details.delta.dx;
+                _userStudioConventionWidth = (current + delta).clamp(
+                  340.0,
+                  650.0,
+                );
+              });
+            },
+            onReset: () {
+              setState(() {
+                _userStudioConventionWidth = null;
+              });
+            },
+          );
+
           return Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: isMediaRight
                 ? [
                     conventionWidget,
-                    const SizedBox(width: 12),
+                    conventionSplitter,
                     centerWidget,
-                    const SizedBox(width: 12),
+                    mediaSplitter,
                     mediaWidget,
                   ]
                 : [
                     mediaWidget,
-                    const SizedBox(width: 12),
+                    mediaSplitter,
                     centerWidget,
-                    const SizedBox(width: 12),
+                    conventionSplitter,
                     conventionWidget,
                   ],
           );
@@ -5694,10 +7026,10 @@ class _HomeScreenState extends State<HomeScreen>
               value: _project.activeCamera.toUpperCase() == 'ALL'
                   ? 'ALL'
                   : (_project.cameraNames.contains(_project.activeCamera)
-                      ? _project.activeCamera
-                      : (_project.cameraNames.isNotEmpty
-                            ? _project.cameraNames.first
-                            : null)),
+                        ? _project.activeCamera
+                        : (_project.cameraNames.isNotEmpty
+                              ? _project.cameraNames.first
+                              : null)),
               items: [
                 const DropdownMenuItem(
                   value: 'ALL',
@@ -6713,11 +8045,17 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _handleDroppedFiles(List<dynamic> files) async {
     if (files.isEmpty) return;
 
-    bool anyHandled = false;
+    final List<String> droppedPaths = [];
     for (final item in files) {
-      final String path = item.path as String;
-      if (path.isEmpty) continue;
+      final String path = (item.path as String?)?.trim() ?? '';
+      if (path.isNotEmpty) {
+        droppedPaths.add(path);
+      }
+    }
+    if (droppedPaths.isEmpty) return;
 
+    bool anyHandled = false;
+    for (final path in droppedPaths) {
       // 1. Directory -> Media Folder
       if (Directory(path).existsSync()) {
         final scannedFiles = MediaScannerService.scanDirectory(
@@ -6828,10 +8166,77 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
+    // 6. Direct File Drag & Drop (Individual Media Files)
+    if (!anyHandled) {
+      final mediaExtensions = {
+        '.mp4',
+        '.mov',
+        '.mxf',
+        '.crm',
+        '.wav',
+        '.aif',
+        '.aiff',
+        '.lrv',
+        '.xml',
+        '.mp3',
+        '.m4a',
+        '.aac',
+      };
+      final mediaFiles = droppedPaths.where((path) {
+        if (Directory(path).existsSync()) return false;
+        final ext = p.extension(path).toLowerCase();
+        return mediaExtensions.contains(ext);
+      }).toList();
+
+      if (mediaFiles.isNotEmpty) {
+        final parentDir = p.dirname(mediaFiles.first);
+        final explicitFiles =
+            mediaFiles.map((path) => ScannedFile(path)).toList();
+        final droppedSet = mediaFiles.toSet();
+
+        try {
+          final dir = Directory(parentDir);
+          if (dir.existsSync()) {
+            for (final f in dir.listSync(followLinks: false).whereType<File>()) {
+              final ext = p.extension(f.path).toLowerCase();
+              if ((ext == '.xml' || ext == '.lrv') &&
+                  !droppedSet.contains(f.path)) {
+                explicitFiles.add(ScannedFile(f.path));
+              }
+            }
+          }
+        } catch (_) {}
+
+        setState(() {
+          _mediaFolderPath = parentDir;
+          _explicitScannedFiles = explicitFiles;
+          _manualOverrides = {};
+          _baseReport = null;
+        });
+
+        await _generatePreview();
+        if (_report != null) {
+          await _checkAndSyncTimecodes(_report!);
+        }
+        anyHandled = true;
+        if (mounted) {
+          final count = _report?.proposals
+                  .where((p) => !p.isCompanionFile)
+                  .length ??
+              explicitFiles
+                  .where((f) => f.isPrimaryVideo || f.isAudio)
+                  .length;
+          _showNotification(
+            'Archivos multimedia cargados: $count clip(s) detectado(s)',
+          );
+        }
+      }
+    }
+
     if (!anyHandled && mounted) {
-      final firstFileName = p.basename(files.first.path as String);
+      final firstFileName = p.basename(droppedPaths.first);
       _showNotification(
-        'Archivo no soportado: "$firstFileName". Formatos aceptados: carpetas de medios, Excel (.xlsx, .xls), bitácoras de texto (.rtf, .txt), Apple Pages (.pages) o proyectos (.renombrata).',
+        'Archivo no soportado: "$firstFileName". Formatos aceptados: carpetas de medios, archivos de video/audio, Excel (.xlsx, .xls), bitácoras de texto (.rtf, .txt), Apple Pages (.pages) o proyectos (.renombrata).',
         isError: true,
       );
     }
@@ -7154,4 +8559,54 @@ class _DashedBorderPainter extends CustomPainter {
   @override
   bool shouldRepaint(_DashedBorderPainter oldDelegate) =>
       color != oldDelegate.color || strokeWidth != oldDelegate.strokeWidth;
+}
+
+class _StudioSplitterDivider extends StatefulWidget {
+  final ValueChanged<DragUpdateDetails> onDragUpdate;
+  final VoidCallback onReset;
+
+  const _StudioSplitterDivider({
+    required this.onDragUpdate,
+    required this.onReset,
+  });
+
+  @override
+  State<_StudioSplitterDivider> createState() => _StudioSplitterDividerState();
+}
+
+class _StudioSplitterDividerState extends State<_StudioSplitterDivider> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accentColor = theme.colorScheme.primary;
+    final defaultColor = theme.dividerColor.withValues(alpha: 0.25);
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: widget.onDragUpdate,
+        onDoubleTap: widget.onReset,
+        child: SizedBox(
+          width: 12,
+          child: Center(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: _isHovered ? 3.0 : 1.5,
+              height: double.infinity,
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              decoration: BoxDecoration(
+                color: _isHovered ? accentColor : defaultColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
