@@ -165,13 +165,15 @@ Renombrata enforces a single-conversation pair programming model designed for to
 | Mode / Trigger | When to Use | Agent Behavior |
 | :--- | :--- | :--- |
 | *(Default - No prefix)* | Architecture discussions, brainstorming, UI/UX scoping, design decisions | **PLANNING ONLY**: Zero code edits, zero builds or tests. The agent clarifies specs, assesses task complexity, and declares the recommended execution tier. |
-| **`IMPLEMENTATION`** | Starting message with `IMPLEMENTATION` | **SUBAGENT EXECUTION**: Automatically dispatches a subagent at the assessed tier (`flash` or `pro`), runs `flutter test`, and provides a concise summary. |
+| **`IMPLEMENTATION`** | Starting message with `IMPLEMENTATION` | **SUBAGENT EXECUTION**: Automatically dispatches a subagent at the assessed tier (`flash` by default to preserve quota, `pro` for high complexity), runs `flutter test`, and provides a concise summary. Draws from Gemini quota. |
+| **`IMPLEMENT: INHERIT`** | Starting message with `IMPLEMENT: INHERIT` | **FORCED INHERIT SUBAGENT**: Dispatches the subagent strictly using `Model: "inherit"`. The subagent directly adopts whichever model and provider is currently selected in the main chat model picker (e.g., Claude Opus, Claude Sonnet, GPT-4o), drawing strictly from that specific quota. |
 | **`QUICK FIX`** | Starting message with `QUICK FIX` | **DIRECT EDIT**: Applies trivial edits (single typo, 1-line styling) directly without subagent overhead. |
 
 ### Complexity & Execution Tiers (Assessed in Planning)
 * **Standard Tier (`Model: "flash"`)**: 1–2 files, localized UI styling, widget adjustments, simple components. Keeps credit usage minimal.
 * **High Tier (`Model: "pro"`)**: Multi-file refactors, reconciliation engine algorithms, state machine logic, complex tests.
-* *Safeguard: Expensive models (e.g. Argon) are NEVER invoked unless explicitly requested by name.*
+* **Inherited Mode (`Model: "inherit"`)**: Triggered via `IMPLEMENT: INHERIT`. Adopts the model currently active in the chat picker.
+* *Safeguard: Expensive models (e.g. Argon) are NEVER invoked unless explicitly requested by name or active in inherit mode.*
 
 ---
 

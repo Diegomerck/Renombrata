@@ -70,5 +70,31 @@ void main() {
       expect(files.where((f) => f.isVideo).length, 2);
       expect(files.where((f) => f.isAudio).length, 1);
     });
+
+    test('ignores AppleDouble (._*), hidden and OS junk files', () {
+      File(p.join(tempDir.path, '._INFAM_31_51_PROT1_PORT16.MXF')).createSync();
+      File(p.join(tempDir.path, '.hidden.mp4')).createSync();
+      File(p.join(tempDir.path, '.DS_Store')).createSync();
+      File(p.join(tempDir.path, 'Thumbs.db')).createSync();
+      File(p.join(tempDir.path, '._M01.XML')).createSync();
+      File(p.join(tempDir.path, 'INFAM_31_51_PROT1_PORT16.MXF')).createSync();
+      final sub = Directory(p.join(tempDir.path, 'sub'))..createSync();
+      File(p.join(sub.path, '._X.MXF')).createSync();
+
+      final files = MediaScannerService.scanDirectory(tempDir.path);
+      expect(files.map((f) => f.basename).toList(), [
+        'INFAM_31_51_PROT1_PORT16.MXF',
+      ]);
+    });
+
+    test('isIgnoredFile detects hidden and junk basenames only', () {
+      expect(MediaScannerService.isIgnoredFile('/a/b/._X.MXF'), isTrue);
+      expect(MediaScannerService.isIgnoredFile('/a/b/.hidden.mp4'), isTrue);
+      expect(MediaScannerService.isIgnoredFile('/a/b/.DS_Store'), isTrue);
+      expect(MediaScannerService.isIgnoredFile('/a/b/THUMBS.DB'), isTrue);
+      expect(MediaScannerService.isIgnoredFile('/a/b/X.MXF'), isFalse);
+      expect(MediaScannerService.isIgnoredFile('/a/.dir/X.MXF'), isFalse);
+    });
   });
 }
+

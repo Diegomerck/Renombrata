@@ -46,6 +46,17 @@ class ScannedFile {
 }
 
 class MediaScannerService {
+  /// Returns true for macOS AppleDouble (`._NAME.MXF`), other dot-prefixed
+  /// hidden files, and OS junk files (`.DS_Store`, `Thumbs.db`, `desktop.ini`)
+  /// that must never be treated as media or companion files.
+  static bool isIgnoredFile(String path) {
+    final name = p.basename(path);
+    if (name.isEmpty) return false;
+    if (name.startsWith('.')) return true;
+    final lower = name.toLowerCase();
+    return lower == 'thumbs.db' || lower == 'desktop.ini';
+  }
+
   static List<ScannedFile> scanDirectory(
     String dirPath, {
     bool searchSubdirectories = true,
@@ -68,6 +79,7 @@ class MediaScannerService {
     }
 
     return allFiles
+        .where((f) => !isIgnoredFile(f.path))
         .map((f) => ScannedFile(f.path))
         .where((f) => f.isVideo || f.isXml || f.isAudio || f.isCompanion)
         .toList();

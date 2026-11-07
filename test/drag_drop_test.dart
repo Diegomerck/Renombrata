@@ -406,9 +406,10 @@ void main() {
         localPosition: Offset.zero,
         globalPosition: Offset.zero,
       ));
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 600));
     });
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.textContaining('Archivos multimedia cargados'), findsOneWidget);
     expect(find.textContaining('2 clip(s) detectado(s)'), findsOneWidget);

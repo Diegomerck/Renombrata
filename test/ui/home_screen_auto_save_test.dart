@@ -27,7 +27,7 @@ void main() {
   }
 
   group('HomeScreen Studio Slate Auto-Save Tests', () {
-    testWidgets('editing slate field automatically saves metadata after 300ms debounce without user clicking save', (tester) async {
+    testWidgets('editing slate field updates metadata instantly and badge never sticks on Guardando', (tester) async {
       setupDesktopWindow(tester);
 
       final project = RenombrataProject(
@@ -66,8 +66,16 @@ void main() {
       await tester.enterText(sceneFieldFinder, '42');
       await tester.pump(); // Trigger onChanged
 
-      // Advance debounce timer (350ms)
-      await tester.pump(const Duration(milliseconds: 350));
+      // In-memory update is synchronous: badge reads 'Guardado' right away
+      // (well under 100 ms), never 'Guardando...'.
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.descendant(of: saveButtonFinder, matching: find.text('Guardando...')), findsNothing);
+      expect(find.descendant(of: saveButtonFinder, matching: find.text('Guardado')), findsOneWidget);
+      final earlyState = tester.state(find.byType(HomeScreen)) as dynamic;
+      expect((earlyState.project as RenombrataProject).log.records.first.scene, equals('42'));
+
+      // Let the deferred (coalesced) preview refresh run.
+      await tester.pump(const Duration(milliseconds: 800));
       await tester.pumpAndSettle();
 
       // Verify records in project updated automatically

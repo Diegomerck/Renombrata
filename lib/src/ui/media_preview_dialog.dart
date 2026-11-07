@@ -12,6 +12,8 @@ import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/services/clip_matcher_service.dart';
 import 'package:renombrata/src/services/convention_name_generator.dart';
 import 'package:renombrata/src/utils/media_proxy_utils.dart';
+import 'package:renombrata/src/utils/frame_step_utils.dart';
+import 'package:renombrata/src/services/still_capture_service.dart';
 
 class _ClipTagState {
   final String chapter;
@@ -53,6 +55,8 @@ class MediaPreviewDialog extends StatefulWidget {
   final ValueChanged<bool>? onAutoSortChanged;
   final Player? customPlayer;
   final VideoController? customVideoController;
+  final void Function(String message, {bool isError})? onNotification;
+  final String? customStillsDirectoryPath;
 
   const MediaPreviewDialog({
     super.key,
@@ -66,6 +70,8 @@ class MediaPreviewDialog extends StatefulWidget {
     this.onAutoSortChanged,
     this.customPlayer,
     this.customVideoController,
+    this.onNotification,
+    this.customStillsDirectoryPath,
   });
 
   @override
@@ -88,6 +94,24 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
   double _currentZoom = 1.0;
   Offset? _hoveredPointerPosition;
   late bool _autoSortByClip;
+  String? _statusFeedbackMessage;
+  bool _statusFeedbackIsError = false;
+  Timer? _statusFeedbackTimer;
+
+  void _showFeedback(String message, {bool isError = false}) {
+    _statusFeedbackTimer?.cancel();
+    setState(() {
+      _statusFeedbackMessage = message;
+      _statusFeedbackIsError = isError;
+    });
+    _statusFeedbackTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _statusFeedbackMessage = null;
+        });
+      }
+    });
+  }
 
   late TextEditingController _chapterController;
   late TextEditingController _sceneController;
@@ -96,6 +120,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
   late TextEditingController _notesController;
   bool _isMos = false;
   bool _isSaving = false;
+  bool _isCapturingStill = false;
 
   bool _isPlaying = false;
   Duration _position = Duration.zero;
@@ -679,26 +704,15 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
         if (_currentIndex < widget.playlist.length - 1) {
           _goToClip(_currentIndex + 1);
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                '¡Lote completado con éxito! Se inspeccionaron todos los clips.',
-              ),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
-            ),
+          widget.onNotification?.call(
+            '¡Lote completado con éxito! Se inspeccionaron todos los clips.',
           );
           Navigator.of(context).pop();
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al guardar: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _showFeedback('Error al guardar: $e', isError: true);
       }
     } finally {
       if (mounted) {
@@ -709,6 +723,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
 
   @override
   void dispose() {
+    _statusFeedbackTimer?.cancel();
     for (final sub in _subscriptions) {
       sub.cancel();
     }
@@ -736,6 +751,35 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
 
   void _togglePlayPause() {
     _player?.playOrPause();
+  }
+
+  /// Whether the current clip is actually decoded as video (not a RAW /
+  /// audio-only slate monitor), so frame stepping is meaningful.
+  bool _canStepFrames() {
+    if (_player == null || widget.playlist.isEmpty) return false;
+    final path = widget.playlist[_currentIndex].originalFilePath;
+    if (path == null) return false;
+    if (path.toLowerCase().endsWith('.wav')) return false;
+    if (_playbackError != null) return false;
+    final isPlayingProxy = _linkedProxyPath != null && _activeIsProxy;
+    if (MediaProxyUtils.isCanonRaw(path) && !isPlayingProxy) return false;
+    return true;
+  }
+
+  /// Pauses playback and steps one frame back/forward.
+  Future<void> _stepFrame({required bool forward}) async {
+    final player = _player;
+    if (player == null) return;
+    final target = await FrameStepUtils.step(
+      player,
+      forward: forward,
+      position: _position,
+      duration: _duration,
+      fps: FrameStepUtils.fpsFromFrameRate(widget.projectMetadata.frameRate),
+    );
+    if (target != null && mounted) {
+      setState(() => _position = target);
+    }
   }
 
   void _toggleMute() {
@@ -1452,6 +1496,52 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
     return '$base$ext';
   }
 
+
+  Widget _buildStatusFeedbackBanner(bool isDark) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: _statusFeedbackIsError
+          ? (isDark ? Colors.red.shade900.withValues(alpha: 0.8) : Colors.red.shade100)
+          : (isDark ? Colors.green.shade900.withValues(alpha: 0.8) : Colors.green.shade100),
+      child: Row(
+        children: [
+          Icon(
+            _statusFeedbackIsError ? Icons.error_outline : Icons.check_circle_outline,
+            size: 16,
+            color: _statusFeedbackIsError
+                ? (isDark ? Colors.red.shade200 : Colors.red.shade900)
+                : (isDark ? Colors.green.shade200 : Colors.green.shade900),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _statusFeedbackMessage!,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: _statusFeedbackIsError
+                    ? (isDark ? Colors.red.shade200 : Colors.red.shade900)
+                    : (isDark ? Colors.green.shade200 : Colors.green.shade900),
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 14),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () {
+              _statusFeedbackTimer?.cancel();
+              setState(() => _statusFeedbackMessage = null);
+            },
+            color: _statusFeedbackIsError
+                ? (isDark ? Colors.red.shade200 : Colors.red.shade900)
+                : (isDark ? Colors.green.shade200 : Colors.green.shade900),
+          ),
+        ],
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1529,7 +1619,18 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                 return KeyEventResult.handled;
               }
             } else if (!isCtrl && !isAlt) {
-              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+              if (event.logicalKey == LogicalKeyboardKey.comma ||
+                  event.logicalKey == LogicalKeyboardKey.period) {
+                final primaryFocus = FocusManager.instance.primaryFocus;
+                final isTextEditing =
+                    primaryFocus?.context?.widget is EditableText;
+                if (!isTextEditing && _canStepFrames()) {
+                  _stepFrame(
+                    forward: event.logicalKey == LogicalKeyboardKey.period,
+                  );
+                  return KeyEventResult.handled;
+                }
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
                 final primaryFocus = FocusManager.instance.primaryFocus;
                 final isTextEditing =
                     primaryFocus?.context?.widget is EditableText;
@@ -1729,6 +1830,8 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                           ],
                         ),
                       ),
+                      if (_statusFeedbackMessage != null)
+                        _buildStatusFeedbackBanner(isDark),
 
                       // Video Screen Surface with Interactive Slate Magnifier
                       Expanded(
@@ -2079,6 +2182,17 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                             Row(
                               children: [
                                 IconButton(
+                                  key: const ValueKey(
+                                    'preview_frame_back_button',
+                                  ),
+                                  icon: const Icon(Icons.navigate_before),
+                                  visualDensity: VisualDensity.compact,
+                                  tooltip: 'Fotograma anterior (,)',
+                                  onPressed: _canStepFrames()
+                                      ? () => _stepFrame(forward: false)
+                                      : null,
+                                ),
+                                IconButton(
                                   icon: Icon(
                                     _isPlaying ? Icons.pause : Icons.play_arrow,
                                   ),
@@ -2086,6 +2200,17 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                                       ? 'Pausar (Espacio)'
                                       : 'Reproducir (Espacio)',
                                   onPressed: _togglePlayPause,
+                                ),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'preview_frame_forward_button',
+                                  ),
+                                  icon: const Icon(Icons.navigate_next),
+                                  visualDensity: VisualDensity.compact,
+                                  tooltip: 'Fotograma siguiente (.)',
+                                  onPressed: _canStepFrames()
+                                      ? () => _stepFrame(forward: true)
+                                      : null,
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.replay_5),
@@ -2121,6 +2246,126 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                                   ),
                                 ),
                                 const Spacer(),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'preview_capture_still_button',
+                                  ),
+                                  icon: _isCapturingStill
+                                      ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.camera_alt_outlined),
+                                  tooltip: _isCapturingStill
+                                      ? 'Capturando fotograma...'
+                                      : 'Capturar fotograma (Guardar en Escritorio)',
+                                  onPressed: _isCapturingStill
+                                      ? null
+                                      : () async {
+                                          if (widget.playlist.isEmpty ||
+                                              _currentIndex < 0 ||
+                                              _currentIndex >=
+                                                  widget.playlist.length) {
+                                            _showFeedback(
+                                              'No se pudo capturar el fotograma del video',
+                                              isError: true,
+                                            );
+                                            return;
+                                          }
+
+                                          setState(() {
+                                            _isCapturingStill = true;
+                                          });
+
+                                          try {
+                                            final proposal =
+                                                widget.playlist[_currentIndex];
+                                            String baseName;
+                                            if (proposal.proposedFileName
+                                                    .trim()
+                                                    .isNotEmpty) {
+                                              baseName =
+                                                  proposal.proposedFileName.trim();
+                                            } else {
+                                              final liveName =
+                                                  _getLiveConventionName();
+                                              if (liveName.isNotEmpty &&
+                                                  liveName != '—') {
+                                                baseName = liveName;
+                                              } else if (proposal.originalFilePath !=
+                                                  null) {
+                                                baseName = p_path.basename(
+                                                  proposal.originalFilePath!,
+                                                );
+                                              } else {
+                                                baseName = 'Clip';
+                                              }
+                                            }
+
+                                            final projectName = widget
+                                                    .projectMetadata
+                                                    .nomenclature
+                                                    .isNotEmpty
+                                                ? widget.projectMetadata.nomenclature
+                                                : (widget
+                                                        .projectMetadata
+                                                        .production
+                                                        .isNotEmpty
+                                                    ? widget
+                                                        .projectMetadata
+                                                        .production
+                                                    : 'Proyecto');
+                                            final date = widget.projectMetadata.date;
+
+                                            final stillsDir =
+                                                StillCaptureService.getProjectStillsDirectory(
+                                              projectName: projectName,
+                                              date: date,
+                                              baseDesktopPath: widget.customStillsDirectoryPath,
+                                            );
+
+                                            if (_player == null) {
+                                              _showFeedback(
+                                                'No se pudo capturar el fotograma del video',
+                                                isError: true,
+                                              );
+                                              return;
+                                            }
+
+                                            final file =
+                                                await StillCaptureService.captureStill(
+                                              player: _player!,
+                                              baseName: baseName,
+                                              targetDir: stillsDir,
+                                            );
+
+                                            if (file != null && mounted) {
+                                              final msg =
+                                                  'Fotograma guardado: ${p_path.basename(file.path)} en ${p_path.basename(stillsDir.path)}';
+                                              _showFeedback(msg);
+                                              widget.onNotification?.call(msg);
+                                            } else if (mounted) {
+                                              const errMsg =
+                                                  'No se pudo capturar el fotograma del video';
+                                              _showFeedback(errMsg, isError: true);
+                                              widget.onNotification?.call(
+                                                errMsg,
+                                                isError: true,
+                                              );
+                                            }
+                                          } finally {
+                                            if (mounted) {
+                                              setState(() {
+                                                _isCapturingStill = false;
+                                              });
+                                            }
+                                          }
+                                        },
+                                ),
+                                const SizedBox(width: 4),
                                 if (_linkedProxyPath != null) ...[
                                   IconButton(
                                     key: const ValueKey(
@@ -2306,16 +2551,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                                           Clipboard.setData(
                                             ClipboardData(text: text),
                                           );
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text('Copiado: $text'),
-                                              duration: const Duration(
-                                                seconds: 1,
-                                              ),
-                                            ),
-                                          );
+                                          _showFeedback('Copiado: ');
                                         },
                                       ),
                                     ],

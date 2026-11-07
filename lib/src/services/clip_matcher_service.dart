@@ -1052,6 +1052,7 @@ class ClipMatcherService {
     Future<SidecarMetadata?> Function(String filePath)? probeFunction,
     bool pairM01Sidecars = true,
     Map<String, CameraType> cameraTypes = const {},
+    void Function(int current, int total, String currentFileName)? onProgress,
   }) async {
     final report = matchFiles(
       scannedFiles: scannedFiles,
@@ -1068,12 +1069,30 @@ class ClipMatcherService {
     final updatedProposals = <RenameProposal>[];
     final conflictedVideoPaths = <String>{};
 
+    final candidatesToProbe = report.proposals.where((prop) {
+      if (prop.isCompanionFile ||
+          prop.originalFilePath == null ||
+          prop.fileTcIn != null) {
+        return false;
+      }
+      final ext = p.extension(prop.originalFilePath!).toLowerCase();
+      return ['.mov', '.mxf', '.mp4', '.crm', '.lrv'].contains(ext);
+    }).toList();
+    final totalToProbe = candidatesToProbe.length;
+    int probeIndex = 0;
+
     for (final proposal in report.proposals) {
       if (!proposal.isCompanionFile &&
           proposal.originalFilePath != null &&
           proposal.fileTcIn == null) {
         final ext = p.extension(proposal.originalFilePath!).toLowerCase();
         if (['.mov', '.mxf', '.mp4', '.crm', '.lrv'].contains(ext)) {
+          probeIndex++;
+          onProgress?.call(
+            probeIndex,
+            totalToProbe,
+            p.basename(proposal.originalFilePath!),
+          );
           final probe = probeFunction != null
               ? await probeFunction(proposal.originalFilePath!)
               : await EmbeddedMetadataProbeService.probeFile(
@@ -1147,6 +1166,7 @@ class ClipMatcherService {
     Future<SidecarMetadata?> Function(String filePath)? probeFunction,
     bool pairM01Sidecars = true,
     Map<String, CameraType> cameraTypes = const {},
+    void Function(int current, int total, String currentFileName)? onProgress,
   }) => matchFilesAsync(
     scannedFiles: scannedFiles,
     log: log,
@@ -1158,5 +1178,6 @@ class ClipMatcherService {
     probeFunction: probeFunction,
     pairM01Sidecars: pairM01Sidecars,
     cameraTypes: cameraTypes,
+    onProgress: onProgress,
   );
 }

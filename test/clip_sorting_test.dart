@@ -238,10 +238,6 @@ void main() {
       await tester.tap(find.widgetWithText(Tab, 'Bitácora Digital'));
       await tester.pumpAndSettle();
 
-      // Dismiss any lingering SnackBar from dialog completion
-      ScaffoldMessenger.of(tester.element(find.byType(HomeScreen))).clearSnackBars();
-      await tester.pumpAndSettle();
-
       // Check order before manual reorder: Clip 2 was saved first so index 0 = Toma 2, index 1 = Toma 1
       final homeState = tester.state(find.byType(HomeScreen)) as dynamic;
       final savedRecordsBefore = homeState.project.log.records as List<ShotRecord>;

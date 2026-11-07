@@ -19,6 +19,7 @@ class BitacoraEditorTab extends StatefulWidget {
   final ValueChanged<AppSettings>? onSettingsChanged;
   final VoidCallback? onSaveProject;
   final LiveTimecodeService? timecodeService;
+  final void Function(String message, {bool isError})? onNotification;
 
   const BitacoraEditorTab({
     super.key,
@@ -28,6 +29,7 @@ class BitacoraEditorTab extends StatefulWidget {
     this.onSettingsChanged,
     this.onSaveProject,
     this.timecodeService,
+    this.onNotification,
   });
 
   /// Sorts records by the numeric clip identifier for the active camera.
@@ -76,6 +78,9 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   FocusNode? _activeAutofocusNode;
   String? _cutFeedbackMessage;
   Timer? _cutFeedbackTimer;
+  String? _inlineStatusMessage;
+  bool _inlineStatusIsError = false;
+  Timer? _inlineStatusTimer;
   int? _editingClusterStartIndex;
   late TextEditingController _inlineCapController;
   late TextEditingController _inlineSceneController;
@@ -171,6 +176,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
     _cutFeedbackTimer?.cancel();
+    _inlineStatusTimer?.cancel();
     _activeAutofocusNode?.dispose();
     if (_ownsTimecodeService) {
       _timecodeService.dispose();
@@ -378,12 +384,77 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
     _updateRecords(restoredRecords);
   }
 
+  void _notify(String message, {bool isError = false}) {
+    if (widget.onNotification != null) {
+      widget.onNotification!(message, isError: isError);
+    } else {
+      _inlineStatusTimer?.cancel();
+      setState(() {
+        _inlineStatusMessage = message;
+        _inlineStatusIsError = isError;
+      });
+      _inlineStatusTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) {
+          setState(() {
+            _inlineStatusMessage = null;
+          });
+        }
+      });
+    }
+  }
+
+  Widget _buildInlineStatusBanner() {
+    if (_inlineStatusMessage == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16.0, 8.0, 16.0, 4.0),
+      child: Material(
+        elevation: 2,
+        borderRadius: BorderRadius.circular(6),
+        color: _inlineStatusIsError ? Colors.red.shade100 : Colors.green.shade100,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+          child: Row(
+            children: [
+              Icon(
+                _inlineStatusIsError ? Icons.error_outline : Icons.check_circle_outline,
+                size: 18,
+                color: _inlineStatusIsError ? Colors.red.shade900 : Colors.green.shade900,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _inlineStatusMessage!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: _inlineStatusIsError ? Colors.red.shade900 : Colors.green.shade900,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 16),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: () {
+                  _inlineStatusTimer?.cancel();
+                  setState(() => _inlineStatusMessage = null);
+                },
+                color: _inlineStatusIsError ? Colors.red.shade900 : Colors.green.shade900,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Focus(
       autofocus: _activeAutofocusNode == null,
       child: Column(
         children: [
+          _buildInlineStatusBanner(),
           _buildHeaderCard(),
           Expanded(
             child: _buildDataGrid(),
@@ -788,14 +859,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
         final f = int.tryParse(parts[3]) ?? 0;
         _timecodeService.jamTimecode(h, m, s, f);
         if (mounted) {
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Jam Sync fijado en: $normalized'),
-              duration: const Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          _notify('Jam Sync fijado en: $normalized');
         }
       }
     }
@@ -2071,14 +2135,7 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                       onSelected: (value) {
                         if (value == 'tod') {
                           _timecodeService.syncToTimeOfDay();
-                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Sincronizado a Reloj del Sistema (Time of Day - TOD)'),
-                              duration: Duration(seconds: 2),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
+                          _notify('Sincronizado a Reloj del Sistema (Time of Day - TOD)');
                         } else if (value == 'jam') {
                           _showJamSyncDialog();
                         }
@@ -2090,7 +2147,12 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                             children: [
                               Icon(Icons.schedule, size: 16),
                               SizedBox(width: 8),
-                              Text('Sincronizar Reloj (TOD - Hora Real)'),
+                              Expanded(
+                                child: Text(
+                                  'Sincronizar TOD (Hora Real)',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -2100,7 +2162,12 @@ class _BitacoraEditorTabState extends State<BitacoraEditorTab> {
                             children: [
                               Icon(Icons.tune, size: 16),
                               SizedBox(width: 8),
-                              Text('Ajustar Código Manual (Jam Sync)...'),
+                              Expanded(
+                                child: Text(
+                                  'Ajustar Jam Sync...',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),

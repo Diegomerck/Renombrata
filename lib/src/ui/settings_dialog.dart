@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -43,6 +44,39 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late bool _tempShowTf;
   late List<String> _tempBitacoraElementOrder;
   late List<String> _tempConventionNameOrder;
+  String? _statusMessage;
+  bool _statusIsError = false;
+  Timer? _statusTimer;
+
+  void _showStatus(String message, {bool isError = false}) {
+    _statusTimer?.cancel();
+    setState(() {
+      _statusMessage = message;
+      _statusIsError = isError;
+    });
+    _statusTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _statusMessage = null;
+        });
+      }
+    });
+  }
+
+  void _clearStatus() {
+    _statusTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _statusMessage = null;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _statusTimer?.cancel();
+    super.dispose();
+  }
 
   static const Map<String, String> _elementLabels = {
     'capitulo': 'Capítulo',
@@ -165,22 +199,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
         } catch (_) {}
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Configuración exportada correctamente'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          _showStatus('Configuración exportada correctamente');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al exportar configuración: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _showStatus('Error al exportar configuración: $e', isError: true);
       }
     }
   }
@@ -197,22 +221,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
         final imported = SettingsService.importSettingsJson(content);
         _updateSettings(imported);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Configuración importada y aplicada exitosamente'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          _showStatus('Configuración importada y aplicada exitosamente');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al importar archivo de configuración: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _showStatus('Error al importar archivo de configuración: $e', isError: true);
       }
     }
   }
@@ -1014,12 +1028,178 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
+  Widget _buildVideoPlayerTab(ThemeData theme) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Comportamiento de Reproducción',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            elevation: 0,
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.2)),
+            ),
+            child: SwitchListTile(
+              key: const ValueKey('settings_pause_video_on_tab_switch_tile'),
+              title: const Text(
+                'Pausar automáticamente al cambiar de pestaña',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Pausa la reproducción al cambiar a la Bitácora Digital y conserva la posición exacta al regresar. Si se desactiva, continúa reproduciéndose en segundo plano.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _settings.pauseVideoOnTabSwitch,
+              onChanged: (val) {
+                _updateSettings(_settings.copyWith(pauseVideoOnTabSwitch: val));
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Captura de Fotogramas (Stills)',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            elevation: 0,
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.2)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.folder_outlined, size: 20, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Carpeta de destino para fotogramas',
+                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _settings.customStillsDirectoryPath != null &&
+                            _settings.customStillsDirectoryPath!.isNotEmpty
+                        ? _settings.customStillsDirectoryPath!
+                        : 'Por defecto: Escritorio (Desktop/Stills - [Proyecto] - [Fecha])',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: _settings.customStillsDirectoryPath != null ? 'monospace' : null,
+                      color: _settings.customStillsDirectoryPath != null
+                          ? theme.colorScheme.primary
+                          : theme.hintColor,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        key: const ValueKey('settings_change_stills_folder_button'),
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('Elegir Carpeta'),
+                        onPressed: () async {
+                          final selected = await FilePicker.getDirectoryPath();
+                          if (selected != null && mounted) {
+                            _updateSettings(
+                              _settings.copyWith(customStillsDirectoryPath: selected),
+                            );
+                            _showStatus('Carpeta de fotogramas actualizada');
+                          }
+                        },
+                      ),
+                      if (_settings.customStillsDirectoryPath != null) ...[
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          key: const ValueKey('settings_reset_stills_folder_button'),
+                          icon: const Icon(Icons.restart_alt, size: 16),
+                          label: const Text('Restablecer a Escritorio'),
+                          onPressed: () {
+                            _updateSettings(
+                              _settings.copyWith(clearCustomStillsDirectoryPath: true),
+                            );
+                            _showStatus('Restablecido a Escritorio por defecto');
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusBanner(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: _statusIsError ? Colors.red.shade100 : Colors.green.shade100,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: _statusIsError ? Colors.red.shade400 : Colors.green.shade400,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _statusIsError ? Icons.error_outline : Icons.check_circle_outline,
+            size: 16,
+            color: _statusIsError ? Colors.red.shade900 : Colors.green.shade900,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _statusMessage!,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: _statusIsError ? Colors.red.shade900 : Colors.green.shade900,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 14),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: _clearStatus,
+            color: _statusIsError ? Colors.red.shade900 : Colors.green.shade900,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return DefaultTabController(
-      length: 3,
+      length: 4,
       initialIndex: widget.initialTabIndex,
       child: AlertDialog(
         titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
@@ -1035,6 +1215,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 const Text('Configuración', style: TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
+            if (_statusMessage != null) ...[
+              const SizedBox(height: 8),
+              _buildStatusBanner(theme),
+            ],
             const SizedBox(height: 12),
             TabBar(
               labelColor: theme.colorScheme.primary,
@@ -1044,18 +1228,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 Tab(icon: Icon(Icons.tune, size: 18), text: 'General'),
                 Tab(icon: Icon(Icons.view_column_outlined, size: 18), text: 'Bitácora'),
                 Tab(icon: Icon(Icons.keyboard_outlined, size: 18), text: 'Atajos'),
+                Tab(icon: Icon(Icons.play_circle_outline, size: 18), text: 'Reproductor de Video'),
               ],
             ),
           ],
         ),
         content: SizedBox(
-          width: 620,
+          width: 680,
           height: 440,
           child: TabBarView(
             children: [
               _buildGeneralTab(theme),
               _buildBitacoraTab(theme),
               _buildShortcutsTab(theme),
+              _buildVideoPlayerTab(theme),
             ],
           ),
         ),

@@ -5,6 +5,8 @@ class AppSettings {
   final bool autoSortByClip;
   final String renamerPaneLayout;
   final Map<String, String> shortcuts;
+  final bool pauseVideoOnTabSwitch;
+  final String? customStillsDirectoryPath;
 
   static const Map<String, String> defaultShortcuts = {
     'new_take': 'Ctrl+N',
@@ -19,6 +21,8 @@ class AppSettings {
     this.autoSortByClip = true,
     this.renamerPaneLayout = 'media_left',
     this.shortcuts = defaultShortcuts,
+    this.pauseVideoOnTabSwitch = true,
+    this.customStillsDirectoryPath,
   });
 
   factory AppSettings.defaults() => const AppSettings();
@@ -28,12 +32,19 @@ class AppSettings {
     bool? autoSortByClip,
     String? renamerPaneLayout,
     Map<String, String>? shortcuts,
+    bool? pauseVideoOnTabSwitch,
+    String? customStillsDirectoryPath,
+    bool clearCustomStillsDirectoryPath = false,
   }) {
     return AppSettings(
       usePagesStyleLayout: usePagesStyleLayout ?? this.usePagesStyleLayout,
       autoSortByClip: autoSortByClip ?? this.autoSortByClip,
       renamerPaneLayout: renamerPaneLayout ?? this.renamerPaneLayout,
       shortcuts: shortcuts != null ? Map<String, String>.unmodifiable(shortcuts) : this.shortcuts,
+      pauseVideoOnTabSwitch: pauseVideoOnTabSwitch ?? this.pauseVideoOnTabSwitch,
+      customStillsDirectoryPath: clearCustomStillsDirectoryPath
+          ? null
+          : (customStillsDirectoryPath ?? this.customStillsDirectoryPath),
     );
   }
 
@@ -42,6 +53,8 @@ class AppSettings {
     'autoSortByClip': autoSortByClip,
     'renamerPaneLayout': renamerPaneLayout,
     'shortcuts': shortcuts,
+    'pauseVideoOnTabSwitch': pauseVideoOnTabSwitch,
+    'customStillsDirectoryPath': customStillsDirectoryPath,
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) {
@@ -59,6 +72,8 @@ class AppSettings {
       autoSortByClip: json['autoSortByClip'] as bool? ?? true,
       renamerPaneLayout: json['renamerPaneLayout'] as String? ?? 'media_left',
       shortcuts: loadedShortcuts,
+      pauseVideoOnTabSwitch: json['pauseVideoOnTabSwitch'] as bool? ?? true,
+      customStillsDirectoryPath: json['customStillsDirectoryPath'] as String?,
     );
   }
 
@@ -70,6 +85,8 @@ class AppSettings {
           usePagesStyleLayout == other.usePagesStyleLayout &&
           autoSortByClip == other.autoSortByClip &&
           renamerPaneLayout == other.renamerPaneLayout &&
+          pauseVideoOnTabSwitch == other.pauseVideoOnTabSwitch &&
+          customStillsDirectoryPath == other.customStillsDirectoryPath &&
           mapEquals(shortcuts, other.shortcuts);
 
   @override
@@ -77,6 +94,8 @@ class AppSettings {
         usePagesStyleLayout,
         autoSortByClip,
         renamerPaneLayout,
+        pauseVideoOnTabSwitch,
+        customStillsDirectoryPath,
         Object.hashAll(shortcuts.entries),
       );
 }

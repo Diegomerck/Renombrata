@@ -200,7 +200,7 @@ void main() {
       await tester.tap(applyButton);
       await tester.pumpAndSettle();
 
-      // Verify SnackBar was shown
+      // Verify notification banner was shown
       expect(find.text('2 nombres aplicados'), findsOneWidget);
 
       // Verify DataTable persists proposed names

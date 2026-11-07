@@ -276,7 +276,7 @@ void main() {
       await tester.tap(applyButton);
       await tester.pumpAndSettle();
 
-      // SnackBar informs non-blocking apply result with unresolved count
+      // Notification banner informs non-blocking apply result with unresolved count
       expect(
         find.text('1 nombres aplicados (2 pendientes de resolver)'),
         findsOneWidget,

@@ -9,11 +9,12 @@ import 'package:renombrata/src/ui/settings_dialog.dart';
 
 void main() {
   group('AppSettings', () {
-    test('defaults to usePagesStyleLayout: true and autoSortByClip: true and renamerPaneLayout: media_left', () {
+    test('defaults to usePagesStyleLayout: true, autoSortByClip: true, renamerPaneLayout: media_left, pauseVideoOnTabSwitch: true', () {
       final settings = AppSettings.defaults();
       expect(settings.usePagesStyleLayout, isTrue);
       expect(settings.autoSortByClip, isTrue);
       expect(settings.renamerPaneLayout, 'media_left');
+      expect(settings.pauseVideoOnTabSwitch, isTrue);
     });
 
     test('copyWith updates properties properly', () {
@@ -22,11 +23,17 @@ void main() {
       expect(updated.usePagesStyleLayout, isFalse);
       expect(updated.autoSortByClip, isTrue);
       expect(updated.renamerPaneLayout, 'media_left');
+      expect(updated.pauseVideoOnTabSwitch, isTrue);
 
-      final updated2 = updated.copyWith(autoSortByClip: false, renamerPaneLayout: 'media_right');
+      final updated2 = updated.copyWith(
+        autoSortByClip: false,
+        renamerPaneLayout: 'media_right',
+        pauseVideoOnTabSwitch: false,
+      );
       expect(updated2.usePagesStyleLayout, isFalse);
       expect(updated2.autoSortByClip, isFalse);
       expect(updated2.renamerPaneLayout, 'media_right');
+      expect(updated2.pauseVideoOnTabSwitch, isFalse);
     });
 
     test('defaults include shortcuts map with expected default keys', () {
@@ -48,10 +55,11 @@ void main() {
       expect(updated.shortcuts['stamp_cut'], 'F5');
     });
 
-    test('serializes to and from json including shortcuts', () {
+    test('serializes to and from json including shortcuts and pauseVideoOnTabSwitch', () {
       final settings = const AppSettings(
         usePagesStyleLayout: false,
         autoSortByClip: false,
+        pauseVideoOnTabSwitch: false,
         shortcuts: {
           'new_take': 'Ctrl+Shift+N',
           'duplicate_take': 'Ctrl+D',
@@ -63,11 +71,13 @@ void main() {
       final json = settings.toJson();
       expect(json['usePagesStyleLayout'], isFalse);
       expect(json['autoSortByClip'], isFalse);
+      expect(json['pauseVideoOnTabSwitch'], isFalse);
       expect(json['shortcuts']['new_take'], 'Ctrl+Shift+N');
 
       final deserialized = AppSettings.fromJson(json);
       expect(deserialized.usePagesStyleLayout, isFalse);
       expect(deserialized.autoSortByClip, isFalse);
+      expect(deserialized.pauseVideoOnTabSwitch, isFalse);
       expect(deserialized.shortcuts['new_take'], 'Ctrl+Shift+N');
     });
 
@@ -75,6 +85,7 @@ void main() {
       final original = const AppSettings(
         usePagesStyleLayout: false,
         autoSortByClip: true,
+        pauseVideoOnTabSwitch: false,
         shortcuts: {
           'new_take': 'Ctrl+N',
           'duplicate_take': 'Ctrl+D',
@@ -87,11 +98,13 @@ void main() {
       final jsonStr = await SettingsService.exportSettingsJson(original);
       expect(jsonStr, contains('"usePagesStyleLayout": false'));
       expect(jsonStr, contains('"autoSortByClip": true'));
+      expect(jsonStr, contains('"pauseVideoOnTabSwitch": false'));
       expect(jsonStr, contains('"stamp_cut": "Ctrl+Space"'));
 
       final imported = SettingsService.importSettingsJson(jsonStr);
       expect(imported.usePagesStyleLayout, isFalse);
       expect(imported.autoSortByClip, isTrue);
+      expect(imported.pauseVideoOnTabSwitch, isFalse);
       expect(imported.shortcuts['stamp_cut'], 'Ctrl+Space');
       expect(imported, equals(original));
     });
@@ -157,7 +170,7 @@ void main() {
       expect(updated!.renamerPaneLayout, 'media_right');
     });
 
-    testWidgets('SettingsDialog renders 3 tabs and switches between General, Bitacora, and Atajos', (tester) async {
+    testWidgets('SettingsDialog renders 4 tabs and switches between General, Bitacora, Atajos, and Reproductor', (tester) async {
       tester.view.physicalSize = const Size(1280, 800);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -184,10 +197,11 @@ void main() {
         ),
       );
 
-      // Verify all 3 tab labels
+      // Verify all 4 tab labels
       expect(find.text('General'), findsOneWidget);
       expect(find.text('Bitácora'), findsOneWidget);
       expect(find.text('Atajos'), findsOneWidget);
+      expect(find.text('Reproductor de Video'), findsOneWidget);
 
       // Switch to Bitacora tab
       await tester.tap(find.text('Bitácora'));
@@ -217,6 +231,13 @@ void main() {
       expect(find.text('Deshacer Eliminación'), findsOneWidget);
       expect(find.text('Guardar Proyecto'), findsOneWidget);
       expect(find.text('Restablecer atajos'), findsOneWidget);
+
+      // Switch to Reproductor de Video tab
+      await tester.tap(find.text('Reproductor de Video'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Comportamiento de Reproducción'), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings_pause_video_on_tab_switch_tile')), findsOneWidget);
     });
 
     testWidgets('SettingsDialog opens directly to Bitacora tab with initialTabIndex: 1', (tester) async {

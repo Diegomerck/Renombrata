@@ -37,6 +37,8 @@ import 'package:renombrata/src/services/convention_name_generator.dart';
 import 'package:renombrata/src/ui/widgets/line_numbered_text_field.dart';
 import 'package:renombrata/src/ui/dialogs/take_linker_dialog.dart';
 import 'package:renombrata/src/ui/dialogs/sony_m01_confirmation_dialog.dart';
+import 'package:renombrata/src/services/still_capture_service.dart';
+import 'package:renombrata/src/utils/frame_step_utils.dart';
 import '../../main.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -45,6 +47,7 @@ class HomeScreen extends StatefulWidget {
   final Player? customStudioPlayer;
   final VideoController? customStudioVideoController;
   final bool? initialStudioMode;
+  final AppSettings? initialSettings;
 
   const HomeScreen({
     super.key,
@@ -53,6 +56,7 @@ class HomeScreen extends StatefulWidget {
     this.customStudioPlayer,
     this.customStudioVideoController,
     this.initialStudioMode,
+    this.initialSettings,
   });
 
   static String computeLiveSmpte(
@@ -118,6 +122,17 @@ class _HomeScreenState extends State<HomeScreen>
   );
 
   AppSettings _appSettings = AppSettings.defaults();
+
+  @visibleForTesting
+  AppSettings get appSettings => _appSettings;
+
+  @visibleForTesting
+  set appSettings(AppSettings s) => _appSettings = s;
+
+  bool _isCapturingStill = false;
+  final ValueNotifier<bool> _studioShutterFlashNotifier =
+      ValueNotifier<bool>(false);
+  Timer? _studioShutterTimer;
 
   @visibleForTesting
   RenombrataProject get project => _project;
@@ -210,6 +225,8 @@ class _HomeScreenState extends State<HomeScreen>
   Timer? _studioSaveDebounceTimer;
   bool _isStudioSaving = false;
   bool _isStudioPendingSave = false;
+  @visibleForTesting
+  bool get isStudioPendingSave => _isStudioPendingSave;
   Duration _lastStudioPlaybackPosition = Duration.zero;
   double? _userStudioMediaWidth;
   double? _userStudioConventionWidth;
@@ -439,11 +456,17 @@ class _HomeScreenState extends State<HomeScreen>
         if (mounted) _evaluateConventionMatches();
       });
     }
+    if (widget.initialSettings != null) {
+      _appSettings = widget.initialSettings!;
+    }
     _reelController.text = _project.defaultReel;
     _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(() {
       if (_tabController.index == 0) {
-        _disposeStudioPlayer();
+        if (_appSettings.pauseVideoOnTabSwitch) {
+          _studioPlayer?.pause();
+          _studioIsPlayingNotifier.value = false;
+        }
       } else if (_tabController.index == 1) {
         _restoreStudioPlayerIfNeeded();
       }
@@ -456,7 +479,7 @@ class _HomeScreenState extends State<HomeScreen>
       _initStudioPlayer();
     }
     SettingsService.loadSettings().then((s) {
-      if (mounted) {
+      if (mounted && widget.initialSettings == null) {
         setState(() {
           _appSettings = s;
         });
@@ -754,6 +777,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    _studioShutterTimer?.cancel();
+    _studioShutterFlashNotifier.dispose();
     _studioSaveDebounceTimer?.cancel();
     _disposeStudioPlayer();
     _tabController.dispose();
@@ -5200,1104 +5225,1160 @@ class _HomeScreenState extends State<HomeScreen>
           )
         : _project.activeCamera;
 
-    final List<Widget> dynamicSlateFields = [];
-    for (final elem in _project.bitacoraElementOrder) {
-      if (elem == 'capitulo' && _project.showChapter) {
-        dynamicSlateFields.add(
-          Expanded(
-            flex: 2,
-            child: TextField(
-              key: const ValueKey('studio_slate_chapter_field'),
-              controller: _studioChapterController,
-              focusNode: _studioChapterFocusNode,
-              decoration: const InputDecoration(
-                labelText: 'Cap',
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 8,
-                ),
-                border: OutlineInputBorder(),
-              ),
-              style: const TextStyle(fontSize: 12),
-              onChanged: (_) => _onStudioSlateFieldChanged(),
-            ),
-          ),
-        );
-      } else if (elem == 'escena') {
-        dynamicSlateFields.add(
-          Expanded(
-            flex: 2,
-            child: TextField(
-              key: const ValueKey('studio_slate_scene_field'),
-              controller: _studioSceneController,
-              focusNode: _studioSceneFocusNode,
-              decoration: const InputDecoration(
-                labelText: 'Escena',
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 8,
-                ),
-                border: OutlineInputBorder(),
-              ),
-              style: const TextStyle(fontSize: 12),
-              onChanged: (_) => _onStudioSlateFieldChanged(),
-            ),
-          ),
-        );
-      } else if (elem == 'plano' && _project.showPlane) {
-        dynamicSlateFields.add(
-          Expanded(
-            flex: 2,
-            child: TextField(
-              key: const ValueKey('studio_slate_plane_field'),
-              controller: _studioPlaneController,
-              focusNode: _studioPlaneFocusNode,
-              decoration: const InputDecoration(
-                labelText: 'Plano',
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 8,
-                ),
-                border: OutlineInputBorder(),
-              ),
-              style: const TextStyle(fontSize: 12),
-              onChanged: (_) => _onStudioSlateFieldChanged(),
-            ),
-          ),
-        );
-      } else if (elem == 'toma') {
-        dynamicSlateFields.add(
-          Expanded(
-            flex: 2,
-            child: TextField(
-              key: const ValueKey('studio_slate_take_field'),
-              controller: _studioTakeController,
-              focusNode: _studioTakeFocusNode,
-              decoration: const InputDecoration(
-                labelText: 'Toma',
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 8,
-                ),
-                border: OutlineInputBorder(),
-              ),
-              style: const TextStyle(fontSize: 12),
-              onChanged: (_) => _onStudioSlateFieldChanged(),
-            ),
-          ),
-        );
-      }
-    }
+    final canStepFrame = _studioPlayer != null && !isSlateMonitor && !isCrm;
 
-    dynamicSlateFields.add(
-      Expanded(
-        flex: 2,
-        child: TextField(
-          key: const ValueKey('studio_slate_reel_field'),
-          controller: _studioReelController,
-          focusNode: _studioReelFocusNode,
-          decoration: const InputDecoration(
-            labelText: 'Reel',
-            isDense: true,
-            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            border: OutlineInputBorder(),
-          ),
-          style: const TextStyle(fontSize: 12),
-          onChanged: (_) => _onStudioSlateFieldChanged(),
-        ),
-      ),
-    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableHeight = constraints.maxHeight;
+        final isCompactVertical = availableHeight < 620;
+        final isScrollableMode = availableHeight < 560;
+        final cardPadding = isCompactVertical ? 8.0 : 12.0;
+        final sectionSpacing = isCompactVertical ? 4.0 : 6.0;
+        final fieldVerticalPadding = isCompactVertical ? 4.0 : 8.0;
 
-    return Focus(
-      focusNode: _studioInspectorFocusNode,
-      child: Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-          side: BorderSide(
-            color: hasFocus
-                ? theme.colorScheme.primary
-                : theme.dividerColor.withValues(alpha: 0.2),
-            width: 1.5,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 1. Proposal Name Banner (Top of center pane, above video player)
-              Container(
-                key: const ValueKey('studio_proposed_banner'),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: theme.colorScheme.primary.withValues(alpha: 0.2),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.drive_file_rename_outline,
-                      size: 16,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 6),
-                    const Text(
-                      'Propuesta: ',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 11,
-                      ),
-                    ),
-                    Expanded(
-                      child: Text(
-                        proposedName,
-                        key: const ValueKey('studio_proposed_banner_text'),
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-              _buildStudioFileDetailsHeader(clip, theme, isDark),
-              const SizedBox(height: 6),
-
-              // 2. Video Player Area (Expanded to consume all remaining vertical space)
+        final List<Widget> dynamicSlateFields = [];
+        for (final elem in _project.bitacoraElementOrder) {
+          if (elem == 'capitulo' && _project.showChapter) {
+            dynamicSlateFields.add(
               Expanded(
-                child: Container(
-                  key: const ValueKey('studio_video_player_container'),
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius: BorderRadius.circular(8),
+                flex: 2,
+                child: TextField(
+                  key: const ValueKey('studio_slate_chapter_field'),
+                  controller: _studioChapterController,
+                  focusNode: _studioChapterFocusNode,
+                  decoration: InputDecoration(
+                    labelText: 'Cap',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: fieldVerticalPadding,
+                    ),
+                    border: const OutlineInputBorder(),
                   ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (isSlateMonitor)
-                        _buildStudioBroadcastSlateMonitor(
-                          clip,
-                          theme,
-                          isDark,
-                          isCanonRaw: isCanonRawSlate,
-                          isWav: isWav,
-                          playbackError: playbackError,
-                        )
-                      else ...[
-                        ClipRect(
-                          child: Listener(
-                            behavior: HitTestBehavior.opaque,
-                            onPointerSignal: (pointerSignal) {
-                              if (pointerSignal is PointerScrollEvent) {
-                                if (pointerSignal.scrollDelta.dy < 0) {
-                                  _studioZoomIn(
-                                    focalPoint: pointerSignal.localPosition,
-                                  );
-                                } else if (pointerSignal.scrollDelta.dy > 0) {
-                                  _studioZoomOut(
-                                    focalPoint: pointerSignal.localPosition,
-                                  );
-                                }
-                              }
-                            },
-                            child: GestureDetector(
-                              key: const ValueKey(
-                                'studio_video_gesture_detector',
-                              ),
-                              onTap: () =>
-                                  _studioWorkspaceFocusNode.requestFocus(),
-                              onDoubleTap: _resetStudioZoom,
-                              child: MouseRegion(
-                                cursor: _studioCurrentZoom > 1.05
-                                    ? SystemMouseCursors.grab
-                                    : SystemMouseCursors.basic,
-                                onHover: (event) {
-                                  _studioHoveredPointerPosition =
-                                      event.localPosition;
-                                },
-                                onExit: (_) {
-                                  _studioHoveredPointerPosition = null;
-                                },
-                                child: InteractiveViewer(
-                                  transformationController:
-                                      _studioZoomController,
-                                  minScale: 1.0,
-                                  maxScale: 5.0,
-                                  panEnabled: true,
-                                  scaleEnabled: true,
-                                  trackpadScrollCausesScale: true,
-                                  boundaryMargin: const EdgeInsets.all(600),
-                                  clipBehavior: Clip.none,
-                                  child: Center(
-                                    child: hasVideo
-                                        ? Video(
-                                            controller: _studioVideoController!,
-                                            controls: NoVideoControls,
-                                            fit: BoxFit.contain,
-                                          )
-                                        : Container(
-                                            color: Colors.black,
-                                            child: Center(
-                                              child: Column(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  const Icon(
-                                                    Icons.movie_filter_rounded,
-                                                    size: 52,
-                                                    color: Colors.white38,
-                                                  ),
-                                                  const SizedBox(height: 8),
-                                                  Text(
-                                                    originalName,
-                                                    style: const TextStyle(
-                                                      color: Colors.white70,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize: 13,
-                                                    ),
-                                                  ),
-                                                  const SizedBox(height: 4),
-                                                  Text(
-                                                    'Timecode: $tcIn → $tcOut',
-                                                    style: const TextStyle(
-                                                      fontFamily: 'monospace',
-                                                      color: Colors.white54,
-                                                      fontSize: 11,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        if (isPlayingProxy)
-                          Positioned(
-                            top: 10,
-                            left: 10,
-                            child: Container(
-                              key: const ValueKey('studio_proxy_linked_badge'),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF065F46),
-                                borderRadius: BorderRadius.circular(4),
-                                border: Border.all(
-                                  color: const Color(0xFF10B981),
-                                  width: 1.2,
-                                ),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black45,
-                                    blurRadius: 4,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.link,
-                                    size: 12,
-                                    color: Color(0xFF34D399),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    '[PROXY VINCULADO: ${p.basename(proxyPath)}]',
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFFD1FAE5),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                        // Floating Magnifier HUD Overlay
-                        Positioned(
-                          top: 10,
-                          right: 10,
-                          child: Container(
-                            key: const ValueKey('studio_magnifier_hud'),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.65),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white24),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  key: const ValueKey('studio_zoom_out_button'),
-                                  icon: const Icon(
-                                    Icons.zoom_out,
-                                    size: 16,
-                                    color: Colors.white,
-                                  ),
-                                  tooltip: 'Alejar',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.all(4),
-                                  constraints: const BoxConstraints(),
-                                  onPressed: _studioCurrentZoom > 1.05
-                                      ? _studioZoomOut
-                                      : null,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '${(_studioCurrentZoom * 100).round()}%',
-                                  key: const ValueKey('studio_zoom_text'),
-                                  style: const TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                                IconButton(
-                                  key: const ValueKey('studio_zoom_in_button'),
-                                  icon: const Icon(
-                                    Icons.zoom_in,
-                                    size: 16,
-                                    color: Colors.white,
-                                  ),
-                                  tooltip: 'Acercar',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.all(4),
-                                  constraints: const BoxConstraints(),
-                                  onPressed: _studioCurrentZoom < 4.95
-                                      ? _studioZoomIn
-                                      : null,
-                                ),
-                                if (_studioCurrentZoom > 1.05) ...[
-                                  Container(
-                                    height: 16,
-                                    width: 1,
-                                    color: Colors.white24,
-                                    margin: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    key: const ValueKey(
-                                      'studio_zoom_reset_button',
-                                    ),
-                                    icon: const Icon(
-                                      Icons.restart_alt,
-                                      size: 16,
-                                      color: Colors.white,
-                                    ),
-                                    tooltip: 'Restablecer 100%',
-                                    visualDensity: VisualDensity.compact,
-                                    padding: const EdgeInsets.all(4),
-                                    constraints: const BoxConstraints(),
-                                    onPressed: _resetStudioZoom,
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                  style: const TextStyle(fontSize: 12),
+                  onChanged: (_) => _onStudioSlateFieldChanged(),
                 ),
               ),
-              const SizedBox(height: 6),
-
-              // Dedicated Studio Transport Bar
-              Container(
-                key: const ValueKey('studio_transport_bar'),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: theme.brightness == Brightness.dark
-                      ? const Color(0xFF1E1E24)
-                      : const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: theme.dividerColor.withValues(alpha: 0.3),
+            );
+          } else if (elem == 'escena') {
+            dynamicSlateFields.add(
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  key: const ValueKey('studio_slate_scene_field'),
+                  controller: _studioSceneController,
+                  focusNode: _studioSceneFocusNode,
+                  decoration: InputDecoration(
+                    labelText: 'Escena',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: fieldVerticalPadding,
+                    ),
+                    border: const OutlineInputBorder(),
                   ),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Seek Scrubber Slider
-                    ValueListenableBuilder<Duration>(
-                      valueListenable: _studioDurationNotifier,
-                      builder: (context, duration, _) {
-                        return ValueListenableBuilder<Duration>(
-                          valueListenable: _studioPositionNotifier,
-                          builder: (context, position, _) {
-                            final durationMs = duration.inMilliseconds;
-                            final positionMs = position.inMilliseconds;
-                            final sliderValue = _studioIsDraggingSlider
-                                ? _studioDragSliderValue
-                                : (durationMs > 0
-                                      ? (positionMs / durationMs).clamp(
-                                          0.0,
-                                          1.0,
-                                        )
-                                      : 0.0);
-
-                            return SliderTheme(
-                              data: SliderTheme.of(context).copyWith(
-                                trackHeight: 3,
-                                thumbShape: const RoundSliderThumbShape(
-                                  enabledThumbRadius: 5,
-                                ),
-                                overlayShape: const RoundSliderOverlayShape(
-                                  overlayRadius: 10,
-                                ),
-                              ),
-                              child: Slider(
-                                key: const ValueKey('studio_scrubber_slider'),
-                                value: sliderValue,
-                                onChanged: (val) {
-                                  setState(() {
-                                    _studioIsDraggingSlider = true;
-                                    _studioDragSliderValue = val;
-                                  });
-                                },
-                                onChangeEnd: (val) {
-                                  final targetMs = (val * durationMs).round();
-                                  final targetDuration = Duration(
-                                    milliseconds: targetMs,
-                                  );
-                                  _studioPlayer?.seek(targetDuration);
-                                  setState(() {
-                                    _studioIsDraggingSlider = false;
-                                    _studioPositionNotifier.value =
-                                        targetDuration;
-                                  });
-                                },
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                    Wrap(
-                      alignment: WrapAlignment.spaceBetween,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      runSpacing: 4,
-                      children: [
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Play / Pause
-                            ValueListenableBuilder<bool>(
-                              valueListenable: _studioIsPlayingNotifier,
-                              builder: (context, isPlaying, _) {
-                                return IconButton(
-                                  key: const ValueKey(
-                                    'studio_play_pause_button',
-                                  ),
-                                  icon: Icon(
-                                    isPlaying
-                                        ? Icons.pause_circle_filled
-                                        : Icons.play_circle_fill,
-                                    size: 22,
-                                    color: theme.colorScheme.primary,
-                                  ),
-                                  tooltip: isPlaying ? 'Pausar' : 'Reproducir',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  onPressed: () {
-                                    if (_studioPlayer != null) {
-                                      _studioPlayer!.playOrPause();
-                                    } else {
-                                      _studioIsPlayingNotifier.value =
-                                          !_studioIsPlayingNotifier.value;
-                                    }
-                                  },
-                                );
-                              },
-                            ),
-                            const SizedBox(width: 6),
-                            // 5s jump back
-                            IconButton(
-                              key: const ValueKey('studio_replay_5_button'),
-                              icon: const Icon(Icons.replay_5, size: 18),
-                              tooltip: 'Retroceder 5s',
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              onPressed: () {
-                                final target =
-                                    _studioPositionNotifier.value -
-                                    const Duration(seconds: 5);
-                                final clamped = target < Duration.zero
-                                    ? Duration.zero
-                                    : target;
-                                _studioPlayer?.seek(clamped);
-                                _studioPositionNotifier.value = clamped;
-                              },
-                            ),
-                            const SizedBox(width: 4),
-                            // 5s jump forward
-                            IconButton(
-                              key: const ValueKey('studio_forward_5_button'),
-                              icon: const Icon(Icons.forward_5, size: 18),
-                              tooltip: 'Avanzar 5s',
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              onPressed: () {
-                                final max = _studioDurationNotifier.value;
-                                final target =
-                                    _studioPositionNotifier.value +
-                                    const Duration(seconds: 5);
-                                final clamped =
-                                    max > Duration.zero && target > max
-                                    ? max
-                                    : target;
-                                _studioPlayer?.seek(clamped);
-                                _studioPositionNotifier.value = clamped;
-                              },
-                            ),
-                            const SizedBox(width: 6),
-                            // Elapsed / Duration text
-                            ValueListenableBuilder<Duration>(
-                              valueListenable: _studioDurationNotifier,
-                              builder: (context, duration, _) {
-                                return ValueListenableBuilder<Duration>(
-                                  valueListenable: _studioPositionNotifier,
-                                  builder: (context, position, _) {
-                                    return Text(
-                                      '${_formatDuration(position)} / ${_formatDuration(duration)}',
-                                      key: const ValueKey(
-                                        'studio_duration_text',
-                                      ),
-                                      style: TextStyle(
-                                        fontFamily: 'monospace',
-                                        fontSize: 10.5,
-                                        color: theme.hintColor,
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                        const SizedBox(width: 8),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Live Running SMPTE Timecode Badge
-                            ValueListenableBuilder<Duration>(
-                              valueListenable: _studioPositionNotifier,
-                              builder: (context, position, _) {
-                                final liveSmpte = _computeLiveSmpte(
-                                  position,
-                                  clip.fileTcIn,
-                                  _project.log.metadata.frameRate,
-                                );
-                                return Container(
-                                  key: const ValueKey(
-                                    'studio_live_smpte_badge',
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: theme.colorScheme.primaryContainer
-                                        .withValues(alpha: 0.5),
-                                    borderRadius: BorderRadius.circular(4),
-                                    border: Border.all(
-                                      color: theme.colorScheme.primary
-                                          .withValues(alpha: 0.3),
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.access_time_rounded,
-                                        size: 11,
-                                        color: theme.colorScheme.primary,
-                                      ),
-                                      const SizedBox(width: 3),
-                                      Text(
-                                        'SMPTE: $liveSmpte',
-                                        style: TextStyle(
-                                          color: theme.colorScheme.primary,
-                                          fontFamily: 'monospace',
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
-                            const SizedBox(width: 6),
-                            ValueListenableBuilder<String?>(
-                              valueListenable: _studioLinkedProxyPathNotifier,
-                              builder: (context, linkedProxy, _) {
-                                if (linkedProxy == null) {
-                                  return const SizedBox.shrink();
-                                }
-                                return ValueListenableBuilder<bool>(
-                                  valueListenable: _studioActiveIsProxyNotifier,
-                                  builder: (context, activeIsProxy, _) {
-                                    return Padding(
-                                      padding: const EdgeInsets.only(right: 6),
-                                      child: Tooltip(
-                                        message: activeIsProxy
-                                            ? 'Reproduciendo proxy vinculado (clic para original)'
-                                            : 'Reproduciendo archivo maestro (clic para proxy)',
-                                        child: InkWell(
-                                          key: const ValueKey(
-                                            'studio_proxy_toggle_button',
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
-                                          onTap: () {
-                                            if (_selectedStudioClip
-                                                    ?.originalFilePath !=
-                                                null) {
-                                              final pos =
-                                                  _studioPositionNotifier.value;
-                                              _studioActiveIsProxyNotifier
-                                                      .value =
-                                                  !activeIsProxy;
-                                              _playStudioMedia(
-                                                _selectedStudioClip!
-                                                    .originalFilePath!,
-                                                seekPosition: pos,
-                                                forceDirectMaster:
-                                                    !_studioActiveIsProxyNotifier
-                                                        .value,
-                                              );
-                                            }
-                                          },
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: activeIsProxy
-                                                  ? const Color(0xFF065F46)
-                                                  : const Color(0xFF1E293B),
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                              border: Border.all(
-                                                color: activeIsProxy
-                                                    ? const Color(0xFF10B981)
-                                                    : Colors.white38,
-                                              ),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  activeIsProxy
-                                                      ? Icons
-                                                            .high_quality_outlined
-                                                      : Icons.videocam_outlined,
-                                                  size: 11,
-                                                  color: activeIsProxy
-                                                      ? const Color(0xFF34D399)
-                                                      : Colors.white70,
-                                                ),
-                                                const SizedBox(width: 3),
-                                                Text(
-                                                  activeIsProxy
-                                                      ? 'PROXY'
-                                                      : 'ORIGINAL',
-                                                  style: TextStyle(
-                                                    fontFamily: 'monospace',
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: activeIsProxy
-                                                        ? const Color(
-                                                            0xFFD1FAE5,
-                                                          )
-                                                        : Colors.white70,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                            // Volume toggle & slider
-                            ValueListenableBuilder<bool>(
-                              valueListenable: _studioIsMutedNotifier,
-                              builder: (context, isMuted, _) {
-                                return ValueListenableBuilder<double>(
-                                  valueListenable: _studioVolumeNotifier,
-                                  builder: (context, volume, _) {
-                                    return Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        IconButton(
-                                          key: const ValueKey(
-                                            'studio_volume_button',
-                                          ),
-                                          icon: Icon(
-                                            isMuted || volume <= 0.0
-                                                ? Icons.volume_off
-                                                : (volume < 50
-                                                      ? Icons.volume_down
-                                                      : Icons.volume_up),
-                                            size: 16,
-                                          ),
-                                          tooltip: isMuted
-                                              ? 'Activar sonido'
-                                              : 'Silenciar',
-                                          padding: EdgeInsets.zero,
-                                          constraints: const BoxConstraints(),
-                                          onPressed: () {
-                                            if (isMuted) {
-                                              final target =
-                                                  _studioPreMuteVolume > 0
-                                                  ? _studioPreMuteVolume
-                                                  : 100.0;
-                                              _studioPlayer?.setVolume(target);
-                                              _studioVolumeNotifier.value =
-                                                  target;
-                                              _studioIsMutedNotifier.value =
-                                                  false;
-                                            } else {
-                                              _studioPreMuteVolume = volume;
-                                              _studioPlayer?.setVolume(0.0);
-                                              _studioVolumeNotifier.value = 0.0;
-                                              _studioIsMutedNotifier.value =
-                                                  true;
-                                            }
-                                          },
-                                        ),
-                                        SizedBox(
-                                          width: 48,
-                                          child: SliderTheme(
-                                            data: SliderTheme.of(context).copyWith(
-                                              trackHeight: 2,
-                                              thumbShape:
-                                                  const RoundSliderThumbShape(
-                                                    enabledThumbRadius: 3,
-                                                  ),
-                                              overlayShape:
-                                                  const RoundSliderOverlayShape(
-                                                    overlayRadius: 6,
-                                                  ),
-                                            ),
-                                            child: Slider(
-                                              key: const ValueKey(
-                                                'studio_volume_slider',
-                                              ),
-                                              value: volume.clamp(0.0, 100.0),
-                                              min: 0.0,
-                                              max: 100.0,
-                                              onChanged: (val) {
-                                                _studioPlayer?.setVolume(val);
-                                                _studioVolumeNotifier.value =
-                                                    val;
-                                                _studioIsMutedNotifier.value =
-                                                    val <= 0.0;
-                                              },
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
+                  style: const TextStyle(fontSize: 12),
+                  onChanged: (_) => _onStudioSlateFieldChanged(),
                 ),
               ),
-              const SizedBox(height: 8),
-
-              // 3. Editable Slate Card (Intrinsic height, not Expanded)
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: theme.dividerColor.withValues(alpha: 0.3),
+            );
+          } else if (elem == 'plano' && _project.showPlane) {
+            dynamicSlateFields.add(
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  key: const ValueKey('studio_slate_plane_field'),
+                  controller: _studioPlaneController,
+                  focusNode: _studioPlaneFocusNode,
+                  decoration: InputDecoration(
+                    labelText: 'Plano',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: fieldVerticalPadding,
+                    ),
+                    border: const OutlineInputBorder(),
                   ),
-                  borderRadius: BorderRadius.circular(8),
+                  style: const TextStyle(fontSize: 12),
+                  onChanged: (_) => _onStudioSlateFieldChanged(),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    LayoutBuilder(
-                      builder: (context, slateConstraints) {
-                        final showCompactHeader =
-                            slateConstraints.maxWidth < 850;
+              ),
+            );
+          } else if (elem == 'toma') {
+            dynamicSlateFields.add(
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  key: const ValueKey('studio_slate_take_field'),
+                  controller: _studioTakeController,
+                  focusNode: _studioTakeFocusNode,
+                  decoration: InputDecoration(
+                    labelText: 'Toma',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: fieldVerticalPadding,
+                    ),
+                    border: const OutlineInputBorder(),
+                  ),
+                  style: const TextStyle(fontSize: 12),
+                  onChanged: (_) => _onStudioSlateFieldChanged(),
+                ),
+              ),
+            );
+          }
+        }
 
-                        final tcBadge = Container(
-                          key: const ValueKey('studio_static_tc_badge'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
+        dynamicSlateFields.add(
+          Expanded(
+            flex: 2,
+            child: TextField(
+              key: const ValueKey('studio_slate_reel_field'),
+              controller: _studioReelController,
+              focusNode: _studioReelFocusNode,
+              decoration: InputDecoration(
+                labelText: 'Reel',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: fieldVerticalPadding,
+                ),
+                border: const OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12),
+              onChanged: (_) => _onStudioSlateFieldChanged(),
+            ),
+          ),
+        );
+
+        final videoPlayerContainer = Container(
+          key: const ValueKey('studio_video_player_container'),
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (isSlateMonitor)
+                _buildStudioBroadcastSlateMonitor(
+                  clip,
+                  theme,
+                  isDark,
+                  isCanonRaw: isCanonRawSlate,
+                  isWav: isWav,
+                  playbackError: playbackError,
+                )
+              else ...[
+                ClipRect(
+                  child: Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerSignal: (pointerSignal) {
+                      if (pointerSignal is PointerScrollEvent) {
+                        if (pointerSignal.scrollDelta.dy < 0) {
+                          _studioZoomIn(
+                            focalPoint: pointerSignal.localPosition,
+                          );
+                        } else if (pointerSignal.scrollDelta.dy > 0) {
+                          _studioZoomOut(
+                            focalPoint: pointerSignal.localPosition,
+                          );
+                        }
+                      }
+                    },
+                    child: GestureDetector(
+                      key: const ValueKey('studio_video_gesture_detector'),
+                      onTap: () => _studioWorkspaceFocusNode.requestFocus(),
+                      onDoubleTap: _resetStudioZoom,
+                      child: MouseRegion(
+                        cursor: _studioCurrentZoom > 1.05
+                            ? SystemMouseCursors.grab
+                            : SystemMouseCursors.basic,
+                        onHover: (event) {
+                          _studioHoveredPointerPosition = event.localPosition;
+                        },
+                        onExit: (_) {
+                          _studioHoveredPointerPosition = null;
+                        },
+                        child: InteractiveViewer(
+                          transformationController: _studioZoomController,
+                          minScale: 1.0,
+                          maxScale: 5.0,
+                          panEnabled: true,
+                          scaleEnabled: true,
+                          trackpadScrollCausesScale: true,
+                          boundaryMargin: const EdgeInsets.all(600),
+                          clipBehavior: Clip.none,
+                          child: Center(
+                            child: hasVideo
+                                ? Video(
+                                    controller: _studioVideoController!,
+                                    controls: NoVideoControls,
+                                    fit: BoxFit.contain,
+                                  )
+                                : Container(
+                                    color: Colors.black,
+                                    child: Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.movie_filter_rounded,
+                                            size: 52,
+                                            color: Colors.white38,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            originalName,
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Timecode: $tcIn → $tcOut',
+                                            style: const TextStyle(
+                                              fontFamily: 'monospace',
+                                              color: Colors.white54,
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                           ),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.primaryContainer
-                                .withValues(alpha: 0.4),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: theme.colorScheme.primary.withValues(
-                                alpha: 0.2,
-                              ),
-                            ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                if (isPlayingProxy)
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    child: Container(
+                      key: const ValueKey('studio_proxy_linked_badge'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF065F46),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: const Color(0xFF10B981),
+                          width: 1.2,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black45,
+                            blurRadius: 4,
+                            offset: Offset(0, 2),
                           ),
-                          child: Text(
-                            'TC: $tcIn → $tcOut',
-                            style: TextStyle(
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.link,
+                            size: 12,
+                            color: Color(0xFF34D399),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '[PROXY VINCULADO: ${p.basename(proxyPath)}]',
+                            style: const TextStyle(
                               fontFamily: 'monospace',
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.primary,
+                              color: Color(0xFFD1FAE5),
                             ),
-                            overflow: TextOverflow.ellipsis,
                           ),
-                        );
+                        ],
+                      ),
+                    ),
+                  ),
 
-                        final cameraBadge = Container(
-                          key: const ValueKey('studio_camera_badge'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
+                // Floating Magnifier HUD Overlay
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: Container(
+                    key: const ValueKey('studio_magnifier_hud'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          key: const ValueKey('studio_zoom_out_button'),
+                          icon: const Icon(
+                            Icons.zoom_out,
+                            size: 16,
+                            color: Colors.white,
                           ),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.secondaryContainer
-                                .withValues(alpha: 0.6),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: theme.colorScheme.secondary.withValues(
-                                alpha: 0.4,
+                          tooltip: 'Alejar',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(4),
+                          constraints: const BoxConstraints(),
+                          onPressed: _studioCurrentZoom > 1.05
+                              ? _studioZoomOut
+                              : null,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${(_studioCurrentZoom * 100).round()}%',
+                          key: const ValueKey('studio_zoom_text'),
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.bold,
+                            fontSize: 11,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          key: const ValueKey('studio_zoom_in_button'),
+                          icon: const Icon(
+                            Icons.zoom_in,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          tooltip: 'Acercar',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(4),
+                          constraints: const BoxConstraints(),
+                          onPressed: _studioCurrentZoom < 4.95
+                              ? _studioZoomIn
+                              : null,
+                        ),
+                        if (_studioCurrentZoom > 1.05) ...[
+                          Container(
+                            height: 16,
+                            width: 1,
+                            color: Colors.white24,
+                            margin: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                            ),
+                          ),
+                          IconButton(
+                            key: const ValueKey('studio_zoom_reset_button'),
+                            icon: const Icon(
+                              Icons.restart_alt,
+                              size: 16,
+                              color: Colors.white,
+                            ),
+                            tooltip: 'Restablecer 100%',
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(),
+                            onPressed: _resetStudioZoom,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Tactile Shutter Flash Overlay
+                ValueListenableBuilder<bool>(
+                  valueListenable: _studioShutterFlashNotifier,
+                  builder: (context, flash, _) {
+                    return IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: flash ? 0.35 : 0.0,
+                        duration: const Duration(milliseconds: 120),
+                        child: Container(color: Colors.white),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ],
+          ),
+        );
+
+        final videoAreaWidget = isScrollableMode
+            ? SizedBox(
+                height: (availableHeight * 0.42).clamp(150.0, 260.0),
+                child: videoPlayerContainer,
+              )
+            : Expanded(child: videoPlayerContainer);
+
+        final mainColumn = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 1. Proposal Name Banner (Top of center pane, above video player)
+            Container(
+              key: const ValueKey('studio_proposed_banner'),
+              padding: EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: isCompactVertical ? 4 : 6,
+              ),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.2),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.drive_file_rename_outline,
+                    size: 16,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Propuesta: ',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      proposedName,
+                      key: const ValueKey('studio_proposed_banner_text'),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: sectionSpacing),
+            _buildStudioFileDetailsHeader(clip, theme, isDark),
+            SizedBox(height: sectionSpacing),
+
+            // 2. Video Player Area
+            videoAreaWidget,
+            SizedBox(height: sectionSpacing),
+
+            // Dedicated Studio Transport Bar
+            Container(
+              key: const ValueKey('studio_transport_bar'),
+              padding: EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: isCompactVertical ? 2 : 4,
+              ),
+              decoration: BoxDecoration(
+                color: theme.brightness == Brightness.dark
+                    ? const Color(0xFF1E1E24)
+                    : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: theme.dividerColor.withValues(alpha: 0.3),
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Seek Scrubber Slider
+                  ValueListenableBuilder<Duration>(
+                    valueListenable: _studioDurationNotifier,
+                    builder: (context, duration, _) {
+                      return ValueListenableBuilder<Duration>(
+                        valueListenable: _studioPositionNotifier,
+                        builder: (context, position, _) {
+                          final durationMs = duration.inMilliseconds;
+                          final positionMs = position.inMilliseconds;
+                          final sliderValue = _studioIsDraggingSlider
+                              ? _studioDragSliderValue
+                              : (durationMs > 0
+                                    ? (positionMs / durationMs).clamp(
+                                        0.0,
+                                        1.0,
+                                      )
+                                    : 0.0);
+
+                          return SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
                               ),
                             ),
-                          ),
-                          child: Text(
-                            'Cámara $detectedCamera',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.onSecondaryContainer,
+                            child: Slider(
+                              key: const ValueKey('studio_scrubber_slider'),
+                              value: sliderValue,
+                              onChanged: (val) {
+                                setState(() {
+                                  _studioIsDraggingSlider = true;
+                                  _studioDragSliderValue = val;
+                                });
+                              },
+                              onChangeEnd: (val) {
+                                final targetMs = (val * durationMs).round();
+                                final targetDuration = Duration(
+                                  milliseconds: targetMs,
+                                );
+                                _studioPlayer?.seek(targetDuration);
+                                setState(() {
+                                  _studioIsDraggingSlider = false;
+                                  _studioPositionNotifier.value =
+                                      targetDuration;
+                                });
+                              },
                             ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      // Cluster 1: Playback Transport Buttons
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Frame Step Back (,)
+                          IconButton(
+                            key: const ValueKey('studio_frame_back_button'),
+                            icon: const Icon(Icons.chevron_left, size: 20),
+                            tooltip: 'Fotograma anterior (,)',
+                            visualDensity: VisualDensity.compact,
+                            style: IconButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: canStepFrame
+                                ? () => _stepStudioFrame(forward: false)
+                                : null,
                           ),
-                        );
-
-                        final unlinkTakeButton = clip.associatedRecord != null
-                            ? OutlinedButton.icon(
+                          const SizedBox(width: 2),
+                          // Play / Pause
+                          ValueListenableBuilder<bool>(
+                            valueListenable: _studioIsPlayingNotifier,
+                            builder: (context, isPlaying, _) {
+                              return IconButton(
                                 key: const ValueKey(
-                                  'studio_unlink_take_button',
+                                  'studio_play_pause_button',
                                 ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: Colors.redAccent,
-                                  side: const BorderSide(
-                                    color: Colors.redAccent,
-                                    width: 1,
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 6,
-                                  ),
-                                  textStyle: const TextStyle(fontSize: 11),
+                                icon: Icon(
+                                  isPlaying
+                                      ? Icons.pause_circle_filled
+                                      : Icons.play_circle_fill,
+                                  size: 22,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                tooltip: isPlaying ? 'Pausar' : 'Reproducir',
+                                visualDensity: VisualDensity.compact,
+                                style: IconButton.styleFrom(
                                   minimumSize: Size.zero,
+                                  padding: const EdgeInsets.all(4),
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                 ),
-                                icon: const Icon(Icons.link_off, size: 13),
-                                label: const Text('Desvincular'),
-                                onPressed: () =>
-                                    _unlinkStudioClip(clip, detectedCamera),
-                              )
-                            : null;
-
-                        final linkTakeButton = _project.log.records.isNotEmpty
-                            ? InkWell(
-                                key: const ValueKey('studio_link_take_button'),
-                                borderRadius: BorderRadius.circular(4),
-                                onTap: () =>
-                                    _openTakeLinkerDialog(clip, detectedCamera),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 6,
+                                onPressed: () {
+                                  if (_studioPlayer != null) {
+                                    _studioPlayer!.playOrPause();
+                                  } else {
+                                    _studioIsPlayingNotifier.value =
+                                        !_studioIsPlayingNotifier.value;
+                                  }
+                                },
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 2),
+                          // Frame Step Forward (.)
+                          IconButton(
+                            key: const ValueKey('studio_frame_forward_button'),
+                            icon: const Icon(Icons.chevron_right, size: 20),
+                            tooltip: 'Fotograma siguiente (.)',
+                            visualDensity: VisualDensity.compact,
+                            style: IconButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: canStepFrame
+                                ? () => _stepStudioFrame(forward: true)
+                                : null,
+                          ),
+                          const SizedBox(width: 4),
+                          // 5s jump back
+                          IconButton(
+                            key: const ValueKey('studio_replay_5_button'),
+                            icon: const Icon(Icons.replay_5, size: 18),
+                            tooltip: 'Retroceder 5s',
+                            visualDensity: VisualDensity.compact,
+                            style: IconButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: () {
+                              final target =
+                                  _studioPositionNotifier.value -
+                                  const Duration(seconds: 5);
+                              final clamped = target < Duration.zero
+                                  ? Duration.zero
+                                  : target;
+                              _studioPlayer?.seek(clamped);
+                              _studioPositionNotifier.value = clamped;
+                            },
+                          ),
+                          const SizedBox(width: 2),
+                          // 5s jump forward
+                          IconButton(
+                            key: const ValueKey('studio_forward_5_button'),
+                            icon: const Icon(Icons.forward_5, size: 18),
+                            tooltip: 'Avanzar 5s',
+                            visualDensity: VisualDensity.compact,
+                            style: IconButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: () {
+                              final max = _studioDurationNotifier.value;
+                              final target =
+                                  _studioPositionNotifier.value +
+                                  const Duration(seconds: 5);
+                              final clamped =
+                                  max > Duration.zero && target > max
+                                  ? max
+                                  : target;
+                              _studioPlayer?.seek(clamped);
+                              _studioPositionNotifier.value = clamped;
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          // Elapsed / Duration text
+                          ValueListenableBuilder<Duration>(
+                            valueListenable: _studioDurationNotifier,
+                            builder: (context, duration, _) {
+                              return ValueListenableBuilder<Duration>(
+                                valueListenable: _studioPositionNotifier,
+                                builder: (context, position, _) {
+                                  return Text(
+                                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                                    key: const ValueKey(
+                                      'studio_duration_text',
+                                    ),
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10.5,
+                                      color: theme.hintColor,
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                      // Cluster 2: SMPTE, Still Capture, Proxy & Volume Controls
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Live Running SMPTE Timecode Badge
+                          ValueListenableBuilder<Duration>(
+                            valueListenable: _studioPositionNotifier,
+                            builder: (context, position, _) {
+                              final liveSmpte = _computeLiveSmpte(
+                                position,
+                                clip.fileTcIn,
+                                _project.log.metadata.frameRate,
+                              );
+                              return Container(
+                                key: const ValueKey(
+                                  'studio_live_smpte_badge',
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primaryContainer
+                                      .withValues(alpha: 0.5),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: theme.colorScheme.primary
+                                        .withValues(alpha: 0.3),
                                   ),
-                                  decoration: BoxDecoration(
-                                    color: theme
-                                        .colorScheme
-                                        .surfaceContainerHighest,
-                                    borderRadius: BorderRadius.circular(4),
-                                    border: Border.all(
-                                      color: theme.dividerColor.withValues(
-                                        alpha: 0.5,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.access_time_rounded,
+                                      size: 11,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      'SMPTE: $liveSmpte',
+                                      style: TextStyle(
+                                        color: theme.colorScheme.primary,
+                                        fontFamily: 'monospace',
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                  ),
-                                  child: Row(
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 4),
+                          // Still Capture Button
+                          IconButton(
+                            key: const ValueKey('studio_capture_still_button'),
+                            icon: _isCapturingStill
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.camera_alt_outlined, size: 16),
+                            tooltip: _isCapturingStill
+                                ? 'Capturando fotograma...'
+                                : 'Capturar fotograma (Guardar en Escritorio)',
+                            visualDensity: VisualDensity.compact,
+                            style: IconButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: _isCapturingStill || _studioPlayer == null
+                                ? null
+                                : _captureStudioStill,
+                          ),
+                        ],
+                      ),
+                      // Cluster 3: Proxy & Volume Controls
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ValueListenableBuilder<String?>(
+                            valueListenable: _studioLinkedProxyPathNotifier,
+                            builder: (context, linkedProxy, _) {
+                              if (linkedProxy == null) {
+                                return const SizedBox.shrink();
+                              }
+                              return ValueListenableBuilder<bool>(
+                                valueListenable: _studioActiveIsProxyNotifier,
+                                builder: (context, activeIsProxy, _) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 4),
+                                    child: Tooltip(
+                                      message: activeIsProxy
+                                          ? 'Reproduciendo proxy vinculado (clic para original)'
+                                          : 'Reproduciendo archivo maestro (clic para proxy)',
+                                      child: InkWell(
+                                        key: const ValueKey(
+                                          'studio_proxy_toggle_button',
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          4,
+                                        ),
+                                        onTap: () {
+                                          if (_selectedStudioClip
+                                                  ?.originalFilePath !=
+                                              null) {
+                                            final pos =
+                                                _studioPositionNotifier.value;
+                                            _studioActiveIsProxyNotifier
+                                                    .value =
+                                                !activeIsProxy;
+                                            _playStudioMedia(
+                                              _selectedStudioClip!
+                                                  .originalFilePath!,
+                                              seekPosition: pos,
+                                              forceDirectMaster:
+                                                  !_studioActiveIsProxyNotifier
+                                                      .value,
+                                            );
+                                          }
+                                        },
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: activeIsProxy
+                                                ? const Color(0xFF065F46)
+                                                : const Color(0xFF1E293B),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                            border: Border.all(
+                                              color: activeIsProxy
+                                                  ? const Color(0xFF10B981)
+                                                  : Colors.white38,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                activeIsProxy
+                                                    ? Icons
+                                                          .high_quality_outlined
+                                                    : Icons.videocam_outlined,
+                                                size: 11,
+                                                color: activeIsProxy
+                                                    ? const Color(0xFF34D399)
+                                                    : Colors.white70,
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Text(
+                                                activeIsProxy
+                                                    ? 'PROXY'
+                                                    : 'ORIGINAL',
+                                                style: TextStyle(
+                                                  fontFamily: 'monospace',
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: activeIsProxy
+                                                      ? const Color(
+                                                          0xFFD1FAE5,
+                                                        )
+                                                      : Colors.white70,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                          // Volume toggle & compact slider
+                          ValueListenableBuilder<bool>(
+                            valueListenable: _studioIsMutedNotifier,
+                            builder: (context, isMuted, _) {
+                              return ValueListenableBuilder<double>(
+                                valueListenable: _studioVolumeNotifier,
+                                builder: (context, volume, _) {
+                                  return Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Icon(
-                                        Icons.link,
-                                        size: 13,
-                                        color: theme.colorScheme.primary,
+                                      IconButton(
+                                        key: const ValueKey(
+                                          'studio_volume_button',
+                                        ),
+                                        icon: Icon(
+                                          isMuted || volume <= 0.0
+                                              ? Icons.volume_off
+                                              : (volume < 50
+                                                    ? Icons.volume_down
+                                                    : Icons.volume_up),
+                                          size: 16,
+                                        ),
+                                        tooltip: isMuted
+                                            ? 'Activar sonido'
+                                            : 'Silenciar',
+                                        visualDensity: VisualDensity.compact,
+                                        style: IconButton.styleFrom(
+                                          minimumSize: Size.zero,
+                                          padding: const EdgeInsets.all(4),
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        ),
+                                        onPressed: () {
+                                          if (isMuted) {
+                                            final target =
+                                                _studioPreMuteVolume > 0
+                                                ? _studioPreMuteVolume
+                                                : 100.0;
+                                            _studioPlayer?.setVolume(target);
+                                            _studioVolumeNotifier.value =
+                                                target;
+                                            _studioIsMutedNotifier.value =
+                                                false;
+                                          } else {
+                                            _studioPreMuteVolume = volume;
+                                            _studioPlayer?.setVolume(0.0);
+                                            _studioVolumeNotifier.value = 0.0;
+                                            _studioIsMutedNotifier.value =
+                                                true;
+                                          }
+                                        },
                                       ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        clip.associatedRecord != null
-                                            ? 'Cambiar Toma'
-                                            : 'Vincular Toma',
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
+                                      SizedBox(
+                                        width: 36,
+                                        child: SliderTheme(
+                                          data: SliderTheme.of(context).copyWith(
+                                            trackHeight: 2,
+                                            thumbShape:
+                                                const RoundSliderThumbShape(
+                                                  enabledThumbRadius: 3,
+                                                ),
+                                            overlayShape:
+                                                const RoundSliderOverlayShape(
+                                                  overlayRadius: 6,
+                                                ),
+                                          ),
+                                          child: Slider(
+                                            key: const ValueKey(
+                                              'studio_volume_slider',
+                                            ),
+                                            value: volume.clamp(0.0, 100.0),
+                                            min: 0.0,
+                                            max: 100.0,
+                                            onChanged: (val) {
+                                              _studioPlayer?.setVolume(val);
+                                              _studioVolumeNotifier.value =
+                                                  val;
+                                              _studioIsMutedNotifier.value =
+                                                  val <= 0.0;
+                                            },
+                                          ),
                                         ),
                                       ),
                                     ],
-                                  ),
-                                ),
-                              )
-                            : null;
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  )
+                ],
+              ),
+            ),
+            SizedBox(height: sectionSpacing),
 
-                        final isSavingNow =
-                            _isStudioSaving || _isStudioPendingSave;
-                        final saveButton = ElevatedButton.icon(
-                          key: const ValueKey('studio_save_slate_button'),
-                          icon: isSavingNow
-                              ? SizedBox(
-                                  width: 12,
-                                  height: 12,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: theme.colorScheme.primary,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.check_circle_outline,
-                                  size: 14,
-                                  color: Colors.green,
-                                ),
-                          label: Text(
-                            isSavingNow ? 'Guardando...' : 'Guardado',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: isSavingNow ? null : Colors.green,
-                              fontWeight: FontWeight.w600,
+            // 3. Editable Slate Card (Intrinsic height, not Expanded)
+            Container(
+              padding: EdgeInsets.all(isCompactVertical ? 6 : 10),
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: theme.dividerColor.withValues(alpha: 0.3),
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LayoutBuilder(
+                    builder: (context, slateConstraints) {
+                      final showCompactHeader =
+                          slateConstraints.maxWidth < 850;
+
+                      final tcBadge = Container(
+                        key: const ValueKey('studio_static_tc_badge'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primaryContainer
+                              .withValues(alpha: 0.4),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: theme.colorScheme.primary.withValues(
+                              alpha: 0.2,
                             ),
                           ),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            textStyle: const TextStyle(fontSize: 11),
-                            minimumSize: Size.zero,
+                        ),
+                        child: Text(
+                          'TC: $tcIn → $tcOut',
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.primary,
                           ),
-                          onPressed: () => _saveStudioSlate(isAutoSave: false),
-                        );
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
 
-                        if (showCompactHeader) {
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    Icons.movie_creation_outlined,
-                                    size: 16,
-                                    color: theme.colorScheme.primary,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  const Text(
-                                    'Claqueta y Bitácora',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
+                      final cameraBadge = Container(
+                        key: const ValueKey('studio_camera_badge'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.secondaryContainer
+                              .withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: theme.colorScheme.secondary.withValues(
+                              alpha: 0.4,
+                            ),
+                          ),
+                        ),
+                        child: Text(
+                          'Cámara $detectedCamera',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.onSecondaryContainer,
+                          ),
+                        ),
+                      );
+
+                      final unlinkTakeButton = clip.associatedRecord != null
+                          ? OutlinedButton.icon(
+                              key: const ValueKey(
+                                'studio_unlink_take_button',
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.redAccent,
+                                side: const BorderSide(
+                                  color: Colors.redAccent,
+                                  width: 1,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 6,
+                                ),
+                                textStyle: const TextStyle(fontSize: 11),
+                                minimumSize: Size.zero,
+                              ),
+                              icon: const Icon(Icons.link_off, size: 13),
+                              label: const Text('Desvincular'),
+                              onPressed: () =>
+                                  _unlinkStudioClip(clip, detectedCamera),
+                            )
+                          : null;
+
+                      final linkTakeButton = _project.log.records.isNotEmpty
+                          ? InkWell(
+                              key: const ValueKey('studio_link_take_button'),
+                              borderRadius: BorderRadius.circular(4),
+                              onTap: () =>
+                                  _openTakeLinkerDialog(clip, detectedCamera),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: theme
+                                      .colorScheme
+                                      .surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: theme.dividerColor.withValues(
+                                      alpha: 0.5,
                                     ),
                                   ),
-                                  const SizedBox(width: 6),
-                                  cameraBadge,
-                                  const SizedBox(width: 6),
-                                  Expanded(child: tcBadge),
-                                ],
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.link,
+                                      size: 13,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      clip.associatedRecord != null
+                                          ? 'Cambiar Toma'
+                                          : 'Vincular Toma',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              const SizedBox(height: 6),
-                              Wrap(
-                                alignment: WrapAlignment.end,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                spacing: 6,
-                                runSpacing: 4,
-                                children: [
-                                  ?unlinkTakeButton,
-                                  ?linkTakeButton,
-                                  saveButton,
-                                ],
-                              ),
-                            ],
-                          );
-                        }
+                            )
+                          : null;
 
-                        return Row(
-                          children: [
-                            Icon(
-                              Icons.movie_creation_outlined,
-                              size: 16,
-                              color: theme.colorScheme.primary,
-                            ),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'Claqueta y Bitácora',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
+                      final isSavingNow = _isStudioSaving;
+                      final saveButton = ElevatedButton.icon(
+                        key: const ValueKey('studio_save_slate_button'),
+                        icon: isSavingNow
+                            ? SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.check_circle_outline,
+                                size: 14,
+                                color: Colors.green,
                               ),
+                        label: Text(
+                          isSavingNow ? 'Guardando...' : 'Guardado',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isSavingNow ? null : Colors.green,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          textStyle: const TextStyle(fontSize: 11),
+                          minimumSize: Size.zero,
+                        ),
+                        onPressed: () => _saveStudioSlate(isAutoSave: false),
+                      );
+
+                      if (showCompactHeader) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.movie_creation_outlined,
+                                  size: 16,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                const SizedBox(width: 6),
+                                const Text(
+                                  'Claqueta y Bitácora',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                cameraBadge,
+                                const SizedBox(width: 6),
+                                Expanded(child: tcBadge),
+                              ],
                             ),
-                            const SizedBox(width: 6),
-                            cameraBadge,
-                            const SizedBox(width: 6),
-                            Flexible(child: tcBadge),
-                            const SizedBox(width: 8),
-                            const Spacer(),
+                            const SizedBox(height: 6),
                             Wrap(
                               alignment: WrapAlignment.end,
                               crossAxisAlignment: WrapCrossAlignment.center,
@@ -6311,78 +6392,135 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ],
                         );
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    FocusTraversalGroup(
-                      policy: WidgetOrderTraversalPolicy(),
-                      child: Row(
+                      }
+
+                      return Row(
                         children: [
-                          for (
-                            int i = 0;
-                            i < dynamicSlateFields.length;
-                            i++
-                          ) ...[
-                            if (i > 0) const SizedBox(width: 6),
-                            dynamicSlateFields[i],
-                          ],
+                          Icon(
+                            Icons.movie_creation_outlined,
+                            size: 16,
+                            color: theme.colorScheme.primary,
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Claqueta y Bitácora',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          cameraBadge,
+                          const SizedBox(width: 6),
+                          Flexible(child: tcBadge),
+                          const SizedBox(width: 8),
+                          const Spacer(),
+                          Wrap(
+                            alignment: WrapAlignment.end,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              ?unlinkTakeButton,
+                              ?linkTakeButton,
+                              saveButton,
+                            ],
+                          ),
                         ],
-                      ),
+                      );
+                    },
+                  ),
+                  SizedBox(height: sectionSpacing),
+                  FocusTraversalGroup(
+                    policy: WidgetOrderTraversalPolicy(),
+                    child: Row(
+                      children: [
+                        for (
+                          int i = 0;
+                          i < dynamicSlateFields.length;
+                          i++
+                        ) ...[
+                          if (i > 0) const SizedBox(width: 6),
+                          dynamicSlateFields[i],
+                        ],
+                      ],
                     ),
-                    if (hasVisibleFlags) ...[
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          if (_project.showMos)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_mos',
-                              label: 'MOS',
-                              selected: _studioIsMos,
-                              onSelected: (val) {
-                                setState(() => _studioIsMos = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                          if (_project.showTf)
-                            _buildStudioFlagChip(
-                              key: 'studio_flag_tf',
-                              label: 'TF (Toma Falsa)',
-                              selected: _studioIsTf,
-                              onSelected: (val) {
-                                setState(() => _studioIsTf = val);
-                                _onStudioSlateFieldChanged();
-                              },
-                            ),
-                        ],
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    TextField(
-                      key: const ValueKey('studio_slate_notes_field'),
-                      controller: _studioNotesController,
-                      focusNode: _studioNotesFocusNode,
-                      maxLines: 1,
-                      decoration: const InputDecoration(
-                        labelText: 'Observaciones / Notas',
-                        isDense: true,
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 8,
-                        ),
-                        border: OutlineInputBorder(),
-                      ),
-                      style: const TextStyle(fontSize: 12),
-                      onChanged: (_) => _onStudioSlateFieldChanged(),
+                  ),
+                  if (hasVisibleFlags) ...[
+                    SizedBox(height: sectionSpacing),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        if (_project.showMos)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_mos',
+                            label: 'MOS',
+                            selected: _studioIsMos,
+                            onSelected: (val) {
+                              setState(() => _studioIsMos = val);
+                              _onStudioSlateFieldChanged();
+                            },
+                          ),
+                        if (_project.showTf)
+                          _buildStudioFlagChip(
+                            key: 'studio_flag_tf',
+                            label: 'TF (Toma Falsa)',
+                            selected: _studioIsTf,
+                            onSelected: (val) {
+                              setState(() => _studioIsTf = val);
+                              _onStudioSlateFieldChanged();
+                            },
+                          ),
+                      ],
                     ),
                   ],
-                ),
+                  SizedBox(height: sectionSpacing),
+                  TextField(
+                    key: const ValueKey('studio_slate_notes_field'),
+                    controller: _studioNotesController,
+                    focusNode: _studioNotesFocusNode,
+                    maxLines: 1,
+                    decoration: InputDecoration(
+                      labelText: 'Observaciones / Notas',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: fieldVerticalPadding,
+                      ),
+                      border: const OutlineInputBorder(),
+                    ),
+                    style: const TextStyle(fontSize: 12),
+                    onChanged: (_) => _onStudioSlateFieldChanged(),
+                  ),
+                ],
               ),
-            ],
+            ),
+          ],
+        );
+
+        return Focus(
+          focusNode: _studioInspectorFocusNode,
+          child: Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(
+                color: hasFocus
+                    ? theme.colorScheme.primary
+                    : theme.dividerColor.withValues(alpha: 0.2),
+                width: 1.5,
+              ),
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(cardPadding),
+              child: isScrollableMode
+                  ? SingleChildScrollView(child: mainColumn)
+                  : mainColumn,
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -6533,6 +6671,88 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  Future<void> _stepStudioFrame({required bool forward}) async {
+    final player = _studioPlayer;
+    if (player == null) return;
+    final fps =
+        FrameStepUtils.fpsFromFrameRate(_project.log.metadata.frameRate);
+    final fallbackTarget = await FrameStepUtils.step(
+      player,
+      forward: forward,
+      position: _studioPositionNotifier.value,
+      duration: _studioDurationNotifier.value,
+      fps: fps,
+    );
+    _studioIsPlayingNotifier.value = false;
+    if (fallbackTarget != null) {
+      _studioPositionNotifier.value = fallbackTarget;
+    }
+  }
+
+  Future<void> _captureStudioStill() async {
+    final player = _studioPlayer;
+    if (player == null || _isCapturingStill) return;
+
+    setState(() {
+      _isCapturingStill = true;
+    });
+
+    // Immediate tactile shutter flash feedback
+    _studioShutterFlashNotifier.value = true;
+    _studioShutterTimer?.cancel();
+    _studioShutterTimer = Timer(const Duration(milliseconds: 80), () {
+      if (mounted) {
+        _studioShutterFlashNotifier.value = false;
+      }
+    });
+
+    try {
+      final clip = _selectedStudioClip;
+      String baseName = 'fotograma';
+      if (clip != null) {
+        if (clip.proposedFileName.trim().isNotEmpty) {
+          baseName = clip.proposedFileName.trim();
+        } else if (clip.originalFilePath != null) {
+          baseName = p.basenameWithoutExtension(clip.originalFilePath!);
+        }
+      }
+
+      final stillsDir = StillCaptureService.getProjectStillsDirectory(
+        projectName: _project.log.metadata.nomenclature,
+        date: _project.log.metadata.date,
+      );
+
+      final savedFile = await StillCaptureService.captureStill(
+        player: player,
+        baseName: baseName,
+        targetDir: stillsDir,
+      );
+
+      if (savedFile != null && mounted) {
+        final fileName = p.basename(savedFile.path);
+        final folderName = p.basename(stillsDir.path);
+        _showNotification('Fotograma guardado: $fileName en $folderName');
+      } else if (mounted) {
+        _showNotification(
+          'No se pudo capturar el fotograma del video',
+          isError: true,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        _showNotification('Error al capturar fotograma: $e', isError: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCapturingStill = false;
+        });
+        _studioShutterFlashNotifier.value = false;
+        _studioShutterTimer?.cancel();
+      }
+    }
+  }
+
   KeyEventResult _handleStudioWorkspaceKeyEvent(
     FocusNode node,
     KeyEvent event,
@@ -6587,6 +6807,16 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (isAction && event.logicalKey == LogicalKeyboardKey.arrowRight) {
       _seekStudioRelative(2);
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.period) {
+      _stepStudioFrame(forward: true);
+      return KeyEventResult.handled;
+    }
+
+    if (isAction && event.logicalKey == LogicalKeyboardKey.comma) {
+      _stepStudioFrame(forward: false);
       return KeyEventResult.handled;
     }
 
@@ -6859,8 +7089,9 @@ class _HomeScreenState extends State<HomeScreen>
                 ? const Color(0xFF8E8E9F)
                 : const Color(0xFF64748B),
             onTap: (index) {
-              if (index == 0) {
-                _disposeStudioPlayer();
+              if (index == 0 && _appSettings.pauseVideoOnTabSwitch) {
+                _studioPlayer?.pause();
+                _studioIsPlayingNotifier.value = false;
               }
             },
             tabs: const [
