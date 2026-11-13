@@ -1,4 +1,5 @@
 import 'package:renombrata/src/ui/dialogs/folder_ingestion_dialog.dart';
+import 'package:renombrata/src/ui/dialogs/proforma_dl_xml_dialog.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
@@ -35,6 +36,8 @@ import 'package:renombrata/src/ui/quick_paste_convention_dialog.dart';
 import 'package:renombrata/src/services/convention_generator_service.dart';
 import 'package:renombrata/src/services/convention_name_generator.dart';
 import 'package:renombrata/src/ui/widgets/line_numbered_text_field.dart';
+import 'package:renombrata/src/ui/widgets/convention_text_editing_controller.dart';
+import 'package:renombrata/src/ui/widgets/convention_sequence_guide.dart';
 import 'package:renombrata/src/ui/dialogs/take_linker_dialog.dart';
 import 'package:renombrata/src/ui/dialogs/sony_m01_confirmation_dialog.dart';
 import 'package:renombrata/src/services/still_capture_service.dart';
@@ -102,6 +105,8 @@ class _ConventionLineStatus {
   final IconData icon;
   final Color color;
   final String? targetFilePath;
+  final String? camera;
+  final String? subConvention;
 
   const _ConventionLineStatus({
     required this.lineNumber,
@@ -109,6 +114,8 @@ class _ConventionLineStatus {
     required this.icon,
     required this.color,
     this.targetFilePath,
+    this.camera,
+    this.subConvention,
   });
 }
 
@@ -322,16 +329,27 @@ class _HomeScreenState extends State<HomeScreen>
   ({double mediaWidth, double conventionWidth}) calculateStudioPaneWidths(
     double totalWidth,
   ) {
+    const minCenterWidth = 420.0;
+    const splitters = 24.0;
+    final availableForPanes =
+        (totalWidth - minCenterWidth - splitters).clamp(550.0, double.infinity);
+
     if (totalWidth <= 1250) {
       final t = ((totalWidth - 1100.0) / 150.0).clamp(0.0, 1.0);
-      final media = 280.0 + (330.0 - 280.0) * t;
-      final conv = 310.0 + (360.0 - 310.0) * t;
+      double media = 280.0 + (330.0 - 280.0) * t;
+      double conv = 310.0 + (360.0 - 310.0) * t;
+      if (media + conv > availableForPanes) {
+        final scale = availableForPanes / (media + conv);
+        media = (media * scale).clamp(250.0, 340.0);
+        conv = (availableForPanes - media).clamp(280.0, 400.0);
+      }
       return (mediaWidth: media, conventionWidth: conv);
     }
-    final centerTarget = (totalWidth * 0.44).clamp(680.0, 850.0);
-    final remainder = totalWidth - centerTarget - 24.0;
-    final mediaWidth = (remainder * 0.42).clamp(340.0, 520.0);
-    final conventionWidth = (remainder - mediaWidth).clamp(380.0, 600.0);
+    final centerTarget = (totalWidth * 0.44).clamp(minCenterWidth, 850.0);
+    final remainder = (totalWidth - centerTarget - splitters)
+        .clamp(550.0, double.infinity);
+    final mediaWidth = (remainder * 0.42).clamp(300.0, 520.0);
+    final conventionWidth = (remainder - mediaWidth).clamp(340.0, 600.0);
     return (mediaWidth: mediaWidth, conventionWidth: conventionWidth);
   }
 
@@ -405,6 +423,9 @@ class _HomeScreenState extends State<HomeScreen>
   Map<String, String> get livePastedOverrides => _livePastedOverrides;
 
   @visibleForTesting
+  Map<String, String> get duplicateClipConflicts => _duplicateClipConflicts;
+
+  @visibleForTesting
   void updateProject(RenombrataProject newProject) =>
       _updateProject(newProject);
 
@@ -423,9 +444,10 @@ class _HomeScreenState extends State<HomeScreen>
   final ScrollController _studioMediaListScrollController = ScrollController();
   final ScrollController _conventionLineStatusScrollController =
       ScrollController();
+  final ScrollController _conventionEditorScrollController = ScrollController();
   bool _showConventionEditorPane = false;
-  final TextEditingController _conventionEditorController =
-      TextEditingController();
+  final ConventionTextEditingController _conventionEditorController =
+      ConventionTextEditingController();
   final UndoHistoryController _conventionEditorUndoController =
       UndoHistoryController();
   Map<String, String> _livePastedOverrides = {};
@@ -459,6 +481,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (widget.initialSettings != null) {
       _appSettings = widget.initialSettings!;
     }
+    _conventionEditorController.project = _project;
     _reelController.text = _project.defaultReel;
     _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(() {
@@ -521,6 +544,14 @@ class _HomeScreenState extends State<HomeScreen>
       try {
         _studioSubscriptions.add(
           _studioPlayer!.stream.tracks.listen((tracks) {
+            if (tracks.audio.isNotEmpty) {
+              try {
+                final currentAudio = _studioPlayer!.state.track.audio;
+                if (currentAudio.id == 'no') {
+                  _studioPlayer!.setAudioTrack(tracks.audio.first);
+                }
+              } catch (_) {}
+            }
             if (_selectedStudioClip != null) {
               final path = _selectedStudioClip!.originalFilePath;
               if (path != null) {
@@ -701,14 +732,19 @@ class _HomeScreenState extends State<HomeScreen>
     Duration? seekPosition,
     bool forceDirectMaster = false,
   }) {
-    final proxy = MediaProxyUtils.findLinkedProxyPath(path);
+    final cleanPath = path.trim();
+    final normalizedPath = cleanPath.startsWith('file://')
+        ? (Uri.tryParse(cleanPath)?.toFilePath() ?? cleanPath)
+        : cleanPath;
+
+    final proxy = MediaProxyUtils.findLinkedProxyPath(normalizedPath);
     _studioLinkedProxyPathNotifier.value = proxy;
 
     final bool useProxy =
         proxy != null &&
         _studioActiveIsProxyNotifier.value &&
         !forceDirectMaster;
-    final String mediaToPlay = useProxy ? proxy : path;
+    final String mediaToPlay = useProxy ? proxy : normalizedPath;
     final bool isCrmDirect = MediaProxyUtils.isCanonRaw(mediaToPlay);
 
     if (_studioPlayer == null) {
@@ -725,6 +761,9 @@ class _HomeScreenState extends State<HomeScreen>
         }
         try {
           _studioPlayer?.setVideoTrack(VideoTrack.no());
+        } catch (_) {}
+        try {
+          _studioPlayer?.setVolume(100.0);
         } catch (_) {}
       } else {
         if (platform != null) {
@@ -788,6 +827,7 @@ class _HomeScreenState extends State<HomeScreen>
     _verticalTableScrollController.dispose();
     _studioMediaListScrollController.dispose();
     _conventionLineStatusScrollController.dispose();
+    _conventionEditorScrollController.dispose();
     _studioMediaListFocusNode.removeListener(_onStudioFocusChanged);
     _studioInspectorFocusNode.removeListener(_onStudioFocusChanged);
     _conventionEditorPanelFocusNode.removeListener(_onStudioFocusChanged);
@@ -857,12 +897,40 @@ class _HomeScreenState extends State<HomeScreen>
     if (clips.isEmpty) return;
 
     final selClip = _selectedStudioClip;
-    final existingLines = _conventionEditorController.text.split('\n');
-    if (_project.log.records.isEmpty &&
+    if (_project.log.metadata.nomenclature.trim().isEmpty &&
+        _project.log.metadata.date.trim().isEmpty &&
+        _project.log.records.isEmpty &&
         _conventionEditorController.text.trim().isEmpty &&
         (selClip == null || !_isStudioSlateModified(selClip))) {
       return;
     }
+
+    final existingLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+
+    final effectiveNomenclature =
+        _project.log.metadata.nomenclature.trim().isNotEmpty
+            ? _project.log.metadata.nomenclature.trim()
+            : (_project.log.metadata.production.trim().isNotEmpty
+                ? _project.log.metadata.production.trim()
+                : 'PROD');
+    final effectiveDay = _project.log.metadata.day.trim().isNotEmpty
+        ? _project.log.metadata.day.trim()
+        : '1';
+    final effectiveUnit = _project.log.metadata.unit.trim().isNotEmpty
+        ? _project.log.metadata.unit.trim()
+        : '1';
+
+    final effectiveMetadata = _project.log.metadata.copyWith(
+      nomenclature: effectiveNomenclature,
+      day: effectiveDay,
+      unit: effectiveUnit,
+    );
+    final projectForConvention = _project.copyWith(
+      log: ShootingLog(
+        metadata: effectiveMetadata,
+        records: _project.log.records,
+      ),
+    );
 
     final newLines = <String>[];
     for (int i = 0; i < clips.length; i++) {
@@ -874,21 +942,27 @@ class _HomeScreenState extends State<HomeScreen>
           _selectedStudioClip?.originalFilePath == clip.originalFilePath;
       final hadLine =
           i < existingLines.length && existingLines[i].trim().isNotEmpty;
-      if (rec == null &&
-          !(isCurrentSelected && _isStudioSlateModified(clip)) &&
-          !hadLine) {
-        newLines.add('');
+
+      // Maintain existing line if already edited and selected clip slate wasn't modified
+      if (hadLine && !(isCurrentSelected && _isStudioSlateModified(clip))) {
+        newLines.add(existingLines[i]);
+        if (clip.originalFilePath != null) {
+          _livePastedOverrides[clip.originalFilePath!] = existingLines[i];
+          _livePastedLineNumbers[clip.originalFilePath!] = clipIndex;
+        }
         continue;
       }
 
       final chapter =
           isCurrentSelected && _studioChapterController.text.trim().isNotEmpty
           ? _studioChapterController.text.trim()
-          : (rec?.chapter ?? '');
+          : (rec?.chapter.isNotEmpty == true
+                ? rec!.chapter
+                : (_project.showChapter ? '1' : ''));
       final scene =
           isCurrentSelected && _studioSceneController.text.trim().isNotEmpty
           ? _studioSceneController.text.trim()
-          : (rec?.scene ?? '');
+          : (rec?.scene.isNotEmpty == true ? rec!.scene : '1');
       final plane =
           isCurrentSelected && _studioPlaneController.text.trim().isNotEmpty
           ? _studioPlaneController.text.trim()
@@ -905,10 +979,15 @@ class _HomeScreenState extends State<HomeScreen>
                 : (_getProposalReel(clip).isNotEmpty
                       ? _getProposalReel(clip)
                       : _project.defaultReel));
-      final camera = _project.activeCamera;
+      final camera = clip.originalFilePath != null
+          ? ClipMatcherService.extractCamera(
+              clip.originalFilePath!,
+              fallback: _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
+            )
+          : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
 
       final conventionName = ConventionGeneratorService.generateConventionName(
-        project: _project,
+        project: projectForConvention,
         chapter: chapter,
         scene: scene,
         plane: plane,
@@ -918,16 +997,51 @@ class _HomeScreenState extends State<HomeScreen>
         clipIndex: clipIndex,
       );
 
-      newLines.add(conventionName);
+      final originalFileName = clip.originalFilePath != null
+          ? p.basename(clip.originalFilePath!)
+          : clip.proposedFileName;
+      final rawClipNum = ClipMatcherService.extractClipNumber(originalFileName);
+      final effectiveClip = rawClipNum.isNotEmpty
+          ? rawClipNum.padLeft(3, '0')
+          : clipIndex.toString().padLeft(3, '0');
+      final formattedDate =
+          ConventionGeneratorService.formatDateDDMMYY(_project.log.metadata.date);
+      final effectiveSubDay = formattedDate.isNotEmpty
+          ? formattedDate
+          : (_project.log.metadata.date.isNotEmpty
+              ? _project.log.metadata.date
+              : (effectiveDay.isNotEmpty
+                  ? (effectiveDay.toUpperCase().startsWith('D')
+                      ? effectiveDay.toUpperCase()
+                      : 'D$effectiveDay')
+                  : 'D1'));
+      final camType = _project.getCameraType(camera);
+      final effectiveSubUnit =
+          camType == CameraType.drivingShot
+              ? 'DS'
+              : (effectiveUnit.toUpperCase().startsWith('U')
+                  ? effectiveUnit.toUpperCase()
+                  : 'U$effectiveUnit');
+      final formattedReel =
+          ConventionGeneratorService.formatReelWithCamera(reel, camera);
+      final subConv =
+          '${formattedReel}_${effectiveClip}_${effectiveSubDay}_$effectiveSubUnit';
+
+      String lineToAdd;
+      if (hadLine && existingLines[i].contains('%')) {
+        final existingSuffix = existingLines[i].split('%').sublist(1).join('%');
+        lineToAdd = '$conventionName%$existingSuffix';
+      } else {
+        lineToAdd = '$conventionName%$subConv';
+      }
+
+      newLines.add(lineToAdd);
       if (clip.originalFilePath != null) {
-        _livePastedOverrides[clip.originalFilePath!] = conventionName;
+        _livePastedOverrides[clip.originalFilePath!] = lineToAdd;
         _livePastedLineNumbers[clip.originalFilePath!] = clipIndex;
       }
     }
 
-    while (newLines.isNotEmpty && newLines.last.trim().isEmpty) {
-      newLines.removeLast();
-    }
     _conventionEditorController.text = newLines.join('\n');
     _evaluateConventionMatches();
   }
@@ -935,6 +1049,7 @@ class _HomeScreenState extends State<HomeScreen>
   void _updateProject(RenombrataProject newProject) {
     setState(() {
       _project = newProject;
+      _conventionEditorController.project = newProject;
       _isDirty = true;
       if (_reelController.text != newProject.defaultReel) {
         _reelController.text = newProject.defaultReel;
@@ -1143,6 +1258,30 @@ class _HomeScreenState extends State<HomeScreen>
         });
       }
     }
+  }
+
+  Future<void> _openProformaDlXmlDialog() async {
+    final files = _report?.proposals
+        .where((p) => !p.isCompanionFile)
+        .map((p) => p.originalFilePath)
+        .whereType<String>()
+        .toList();
+
+    await ProformaDlXmlDialog.show(
+      context: context,
+      initialFolderPath: _mediaFolderPath,
+      project: _project,
+      mediaFiles: (files != null && files.isNotEmpty) ? files : null,
+      onGenerated: (count) {
+        if (mounted) {
+          _showNotification(
+            'Se generaron $count sidecars XML (Proforma DL 3.2) exitosamente.',
+            isError: false,
+          );
+          _generatePreview();
+        }
+      },
+    );
   }
 
   Future<void> _pickMediaFolder() async {
@@ -1360,6 +1499,7 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
       });
+      _regenerateConventionLines();
       _evaluateConventionMatches();
     } catch (e) {
       if (mounted) {
@@ -1540,15 +1680,15 @@ class _HomeScreenState extends State<HomeScreen>
     if (p.fileReel != null && p.fileReel!.trim().isNotEmpty) {
       return p.fileReel!.trim();
     }
-    if (p.associatedRecord?.reel != null &&
-        p.associatedRecord!.reel.trim().isNotEmpty) {
-      return p.associatedRecord!.reel.trim();
-    }
     if (p.originalFilePath != null) {
       final extracted = ClipMatcherService.extractReel(p.originalFilePath!);
       if (extracted != null && extracted.isNotEmpty) {
         return extracted;
       }
+    }
+    if (p.associatedRecord?.reel != null &&
+        p.associatedRecord!.reel.trim().isNotEmpty) {
+      return p.associatedRecord!.reel.trim();
     }
     return 'A001';
   }
@@ -1565,7 +1705,7 @@ class _HomeScreenState extends State<HomeScreen>
     final records = List<ShotRecord>.from(_project.log.records);
     bool logChanged = false;
 
-    for (int i = 0; i < lines.length; i++) {
+    for (int i = 0; i < lines.length && i < mediaClips.length; i++) {
       final trimmed = lines[i].trim();
       if (trimmed.isEmpty) continue;
 
@@ -1575,35 +1715,37 @@ class _HomeScreenState extends State<HomeScreen>
       );
       if (parsed == null) continue;
 
+      final clip = mediaClips[i];
       final chapter = parsed['chapter'] ?? '';
       final scene = parsed['scene'] ?? '';
       final plane = parsed['plane'];
       final take = parsed['take'] ?? '1';
-      final reel = parsed['reel'] ?? _project.defaultReel;
-      final clipIndex = int.tryParse(parsed['clipIndex'] ?? '') ?? (i + 1);
-
-      RenameProposal? matchedClip;
-      if (clipIndex > 0 && clipIndex <= mediaClips.length) {
-        matchedClip = mediaClips[clipIndex - 1];
-      }
-
-      final camera = _project.activeCamera;
-      final clipNum = matchedClip != null
-          ? ClipMatcherService.extractClipNumber(
-              matchedClip.originalFilePath ?? '',
+      final reel = parsed['reel'] ?? _getProposalReel(clip);
+      final camera = clip.originalFilePath != null
+          ? ClipMatcherService.extractCamera(
+              clip.originalFilePath!,
+              fallback: _project.activeCamera == 'ALL' ? 'A' : _project.activeCamera,
             )
-          : clipIndex.toString();
+          : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
+      final rawClipNum = ClipMatcherService.extractClipNumber(
+        clip.originalFilePath ?? clip.proposedFileName,
+      );
+      final clipNum = rawClipNum.isNotEmpty ? rawClipNum : (i + 1).toString();
 
       int existingIdx = -1;
-      if (matchedClip?.associatedRecord != null) {
+      if (clip.associatedRecord != null) {
         existingIdx = records.indexWhere(
-          (r) => r.id == matchedClip!.associatedRecord!.id,
+          (r) => r.id == clip.associatedRecord!.id,
         );
       }
       if (existingIdx == -1) {
         existingIdx = records.indexWhere(
           (r) => r.cameras.any(
-            (c) => c.clipName == clipNum && c.cameraName == camera,
+            (c) =>
+                (c.clipName == clipNum ||
+                    (int.tryParse(c.clipName) != null &&
+                        int.tryParse(c.clipName) == int.tryParse(clipNum))) &&
+                c.cameraName.toUpperCase() == camera.toUpperCase(),
           ),
         );
       }
@@ -1618,11 +1760,20 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (existingIdx != -1) {
         final existing = records[existingIdx];
+        final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
+        final camIdx = updatedCameras.indexWhere((c) => c.cameraName == camera);
+        if (camIdx != -1) {
+          updatedCameras[camIdx] = updatedCameras[camIdx].copyWith(clipName: clipNum);
+        } else {
+          updatedCameras.add(CameraTakeRecord(cameraName: camera, clipName: clipNum));
+        }
+
         records[existingIdx] = existing.copyWith(
           chapter: chapter.isNotEmpty ? chapter : existing.chapter,
           scene: scene.isNotEmpty ? scene : existing.scene,
           plane: plane ?? existing.plane,
           take: take.isNotEmpty ? take : existing.take,
+          cameras: updatedCameras,
           reel: reel.isNotEmpty ? reel : existing.reel,
         );
         logChanged = true;
@@ -1634,8 +1785,8 @@ class _HomeScreenState extends State<HomeScreen>
           take: take,
           cameras: [CameraTakeRecord(cameraName: camera, clipName: clipNum)],
           reel: reel,
-          tcIn: matchedClip?.fileTcIn,
-          tcOut: matchedClip?.fileTcOut,
+          tcIn: clip.fileTcIn,
+          tcOut: clip.fileTcOut,
         );
         records.add(newRecord);
         logChanged = true;
@@ -1643,9 +1794,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       // If active clip matches this line, refresh Slate quick entry text controllers
       if (_selectedStudioClip != null &&
-          matchedClip != null &&
-          _selectedStudioClip!.originalFilePath ==
-              matchedClip.originalFilePath) {
+          _selectedStudioClip!.originalFilePath == clip.originalFilePath) {
         _studioChapterController.text = chapter;
         _studioSceneController.text = scene;
         _studioPlaneController.text = plane ?? '';
@@ -1821,12 +1970,16 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (conventionParsed != null) {
         final parsedClip = int.tryParse(conventionParsed['clipIndex'] ?? '');
-        final parsedReel = conventionParsed['reel'];
+        final parsedReel = conventionParsed['rawReel'] ?? conventionParsed['reel'];
+        final effectiveReel =
+            (item.reel != null && RegExp(r'^[A-Za-z]').hasMatch(item.reel!))
+                ? item.reel
+                : (parsedReel ?? item.reel);
         item = PastedLineItem(
           lineNumber: lineIndex,
           rawLine: trimmed,
           clipNumber: parsedClip ?? item.clipNumber,
-          reel: parsedReel ?? item.reel,
+          reel: effectiveReel,
           hasExtractedClip: (parsedClip != null) || item.hasExtractedClip,
         );
       }
@@ -1843,12 +1996,6 @@ class _HomeScreenState extends State<HomeScreen>
         final reelKey = line.reel?.toUpperCase() ?? 'ALL';
         final key = '${reelKey}_${line.clipNumber}';
         pastedByKey.putIfAbsent(key, () => []).add(line);
-        final reelKeyNum = reelKey.replaceAll(RegExp(r'^[A-Z]'), '');
-        if (reelKeyNum.isNotEmpty && reelKeyNum != reelKey) {
-          pastedByKey
-              .putIfAbsent('${reelKeyNum}_${line.clipNumber}', () => [])
-              .add(line);
-        }
       }
     }
     final duplicatePastedKeys = <String>{};
@@ -1863,11 +2010,17 @@ class _HomeScreenState extends State<HomeScreen>
     for (final clip in mediaClips) {
       if (clip.status == ProposalStatus.alreadyRenamed) continue;
       final fileName = p.basename(clip.originalFilePath!);
+      final cam = clip.originalFilePath != null
+          ? ClipMatcherService.extractCamera(clip.originalFilePath!)
+          : '';
       final reel = _getProposalReel(clip).toUpperCase();
+      final effectiveReel = (cam.isNotEmpty && !reel.startsWith(cam))
+          ? '$cam$reel'
+          : reel;
       final clipNumStr = ClipMatcherService.extractClipNumber(fileName);
       final clipNum = int.tryParse(clipNumStr);
       if (clipNum != null) {
-        final key = '${reel}_$clipNum';
+        final key = '${effectiveReel}_$clipNum';
         diskClipsByKey.putIfAbsent(key, () => []).add(clip);
       }
     }
@@ -1944,11 +2097,8 @@ class _HomeScreenState extends State<HomeScreen>
       if (candidates.length == 1) {
         final matchedLine = candidates.first;
         final matchedReel = matchedLine.reel?.toUpperCase() ?? 'ALL';
-        final matchedReelNum = matchedReel.replaceAll(RegExp(r'^[A-Z]'), '');
         final lineKey = '${matchedReel}_${matchedLine.clipNumber}';
-        final altLineKey = '${matchedReelNum}_${matchedLine.clipNumber}';
-        if (!duplicatePastedKeys.contains(lineKey) &&
-            !duplicatePastedKeys.contains(altLineKey)) {
+        if (!duplicatePastedKeys.contains(lineKey)) {
           newLiveOverrides[path] = matchedLine.rawLine;
           newLiveLineNumbers[path] = matchedLine.lineNumber;
         }
@@ -2040,6 +2190,31 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (matchedPath != null) {
         final originalFileName = p.basename(matchedPath);
+        final detectedCam = ClipMatcherService.extractCamera(
+          matchedPath,
+          fallback: _project.activeCamera,
+        );
+        String? subConv;
+        if (trimmed.contains('%')) {
+          subConv = trimmed.split('%').last.trim();
+        } else if (_report != null) {
+          final prop = _report!.proposals
+              .where((p) => p.originalFilePath == matchedPath)
+              .firstOrNull;
+          if (prop != null) {
+            final effectiveTarj = _getProposalReel(prop);
+            final effectiveClip = ClipMatcherService.extractClipNumber(originalFileName);
+            final effectiveDay = _project.log.metadata.date.isNotEmpty
+                ? _project.log.metadata.date
+                : 'D1';
+            final camType = _project.getCameraType(detectedCam);
+            final effectiveUnit = camType == CameraType.drivingShot
+                ? 'DS'
+                : 'U1';
+            subConv = '${effectiveTarj}_${effectiveClip}_${effectiveDay}_$effectiveUnit';
+          }
+        }
+
         statuses.add(
           _ConventionLineStatus(
             lineNumber: lineIndex,
@@ -2047,6 +2222,8 @@ class _HomeScreenState extends State<HomeScreen>
             icon: Icons.check_circle,
             color: Colors.green,
             targetFilePath: matchedPath,
+            camera: detectedCam,
+            subConvention: subConv,
           ),
         );
         continue;
@@ -2369,13 +2546,42 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
+                // Sequence Guide Bar & Active Camera Badge
+                Builder(
+                  builder: (context) {
+                    final detectedGuideCam = _selectedStudioClip?.originalFilePath != null
+                        ? ClipMatcherService.extractCamera(
+                            _selectedStudioClip!.originalFilePath!,
+                            fallback: _project.activeCamera,
+                          )
+                        : _project.activeCamera;
+                    final guideCamType = _project.getCameraType(detectedGuideCam);
+
+                    return ConventionSequenceGuide(
+                      cameraType: guideCamType,
+                      isDrivingShot: guideCamType == CameraType.drivingShot,
+                      isGoPro: guideCamType == CameraType.goPro,
+                      activeCamera: detectedGuideCam,
+                      activeClipName: _selectedStudioClip?.originalFilePath != null
+                          ? p.basename(_selectedStudioClip!.originalFilePath!)
+                          : (_selectedStudioClip?.proposedFileName),
+                      activeLineNumber: _activeConventionEditorLineNumber,
+                      currentLineText: (_activeConventionEditorLineNumber != null &&
+                              _activeConventionEditorLineNumber! <= lines.length)
+                          ? lines[_activeConventionEditorLineNumber! - 1]
+                          : null,
+                    );
+                  },
+                ),
+                const SizedBox(height: 6),
                 // Text Editor with Code Gutter Line Numbers
                 Expanded(
                   child: LineNumberedTextField(
                     controller: _conventionEditorController,
                     undoController: _conventionEditorUndoController,
                     focusNode: _conventionEditorFocusNode,
+                    scrollController: _conventionEditorScrollController,
                     activeLineNumber: _activeConventionEditorLineNumber,
                     hintText:
                         'Pega o escribe aquí la lista de convenciones...\n\nEjemplo:\nMNBOENC_080626_17_11_T1_A001_1_D1_U3',
@@ -2514,19 +2720,68 @@ class _HomeScreenState extends State<HomeScreen>
                                               color: item.color,
                                             ),
                                             const SizedBox(width: 6),
+                                            if (item.camera != null) ...[
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 4,
+                                                  vertical: 1,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: ConventionSequenceGuide.getCameraColor(
+                                                    item.camera,
+                                                  ).withValues(alpha: 0.18),
+                                                  borderRadius: BorderRadius.circular(3),
+                                                  border: Border.all(
+                                                    color: ConventionSequenceGuide.getCameraColor(
+                                                      item.camera,
+                                                    ),
+                                                    width: 0.8,
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  'CAM ${item.camera}',
+                                                  style: TextStyle(
+                                                    fontSize: 9.5,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: ConventionSequenceGuide.getCameraColor(
+                                                      item.camera,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                            ],
                                             Expanded(
-                                              child: Text(
-                                                item.text,
-                                                style: TextStyle(
-                                                  fontSize: 11,
-                                                  fontWeight: isSelectedClipLine
-                                                      ? FontWeight.bold
-                                                      : FontWeight.w500,
-                                                  color: isSelectedClipLine
-                                                      ? theme
-                                                            .colorScheme
-                                                            .primary
-                                                      : item.color,
+                                              child: Text.rich(
+                                                TextSpan(
+                                                  children: [
+                                                    TextSpan(
+                                                      text: item.text,
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight: isSelectedClipLine
+                                                            ? FontWeight.bold
+                                                            : FontWeight.w500,
+                                                        color: isSelectedClipLine
+                                                            ? theme.colorScheme.primary
+                                                            : (theme.brightness == Brightness.dark
+                                                                ? Colors.white
+                                                                : Colors.black87),
+                                                      ),
+                                                    ),
+                                                    if (item.subConvention != null &&
+                                                        item.subConvention!.isNotEmpty)
+                                                      TextSpan(
+                                                        text: ' %${item.subConvention}',
+                                                        style: TextStyle(
+                                                          fontSize: 10,
+                                                          fontStyle: FontStyle.italic,
+                                                          color: theme.brightness == Brightness.dark
+                                                              ? const Color(0xFF8E8E9F)
+                                                              : const Color(0xFF94A3B8),
+                                                        ),
+                                                      ),
+                                                  ],
                                                 ),
                                                 overflow: TextOverflow.ellipsis,
                                               ),
@@ -2785,47 +3040,34 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _highlightMatchingConventionLine(RenameProposal proposal) {
-    final text = _conventionEditorController.text;
-    if (text.isEmpty) return;
+    final clips = _studioMediaClips;
+    int k = clips.indexWhere(
+      (c) => c.originalFilePath == proposal.originalFilePath,
+    ) + 1;
 
-    int? targetLineIndex;
-
-    // 1. Check if line was mapped during live evaluation
-    if (proposal.originalFilePath != null &&
-        _livePastedLineNumbers.containsKey(proposal.originalFilePath)) {
-      targetLineIndex = _livePastedLineNumbers[proposal.originalFilePath];
-    }
-
-    // 2. Fallback: Parse lines in editor to match clip number and reel
-    if (targetLineIndex == null) {
-      final rawLines = text.split(RegExp(r'\r?\n'));
-      final clipNumStr = ClipMatcherService.extractClipNumber(
-        proposal.originalFilePath ?? proposal.proposedFileName,
-      );
-      final clipNum = int.tryParse(clipNumStr);
-      final reel = _getProposalReel(proposal).toUpperCase();
-
-      if (clipNum != null) {
-        for (int i = 0; i < rawLines.length; i++) {
-          final trimmed = rawLines[i].trim();
-          if (trimmed.isEmpty) continue;
-          final parsed = QuickPasteConventionDialog.parsePastedLine(
-            trimmed,
-            i + 1,
-          );
-          if (parsed.hasExtractedClip && parsed.clipNumber == clipNum) {
-            if (parsed.reel == null || parsed.reel!.toUpperCase() == reel) {
-              targetLineIndex = i + 1;
-              break;
-            }
-          }
-        }
+    if (k <= 0) {
+      if (proposal.originalFilePath != null &&
+          _livePastedLineNumbers.containsKey(proposal.originalFilePath)) {
+        k = _livePastedLineNumbers[proposal.originalFilePath]!;
+      } else {
+        k = 1;
       }
     }
 
-    if (targetLineIndex == null) return;
+    // Ensure _conventionEditorController has at least k lines
+    final rawLines = _conventionEditorController.text.split(RegExp(r'\r?\n'));
+    final lines = List<String>.from(rawLines);
+    if (lines.length < k) {
+      while (lines.length < k) {
+        lines.add('');
+      }
+      _conventionEditorController.text = lines.join('\n');
+    }
 
-    // 3. Compute start and end character offsets of targetLineIndex
+    final text = _conventionEditorController.text;
+    if (text.isEmpty) return;
+
+    // Compute start and end character offsets of Line k
     int currentLine = 1;
     int lineStart = 0;
 
@@ -2835,20 +3077,58 @@ class _HomeScreenState extends State<HomeScreen>
         lineEnd = text.length;
       }
 
-      if (currentLine == targetLineIndex) {
+      if (currentLine == k) {
         int cleanEnd = lineEnd;
         if (cleanEnd > lineStart && text[cleanEnd - 1] == '\r') {
           cleanEnd--;
         }
-        _conventionEditorController.selection = TextSelection(
-          baseOffset: lineStart,
-          extentOffset: cleanEnd,
-        );
+        final lineContent = text.substring(lineStart, cleanEnd);
+        if (lineContent.contains('%')) {
+          final percentIdx = lineContent.indexOf('%');
+          _conventionEditorController.selection = TextSelection(
+            baseOffset: lineStart,
+            extentOffset: lineStart + percentIdx,
+          );
+        } else {
+          _conventionEditorController.selection = TextSelection(
+            baseOffset: lineStart,
+            extentOffset: cleanEnd,
+          );
+        }
         break;
       }
 
       lineStart = lineEnd + 1;
       currentLine++;
+    }
+
+    // Scroll Convention Editor view to Line k if needed
+    if (_conventionEditorScrollController.hasClients) {
+      const lineHeight = 13.0 * 1.5;
+      final targetOffset = ((k - 1) * lineHeight) - 30.0;
+      final clamped = targetOffset.clamp(
+        0.0,
+        _conventionEditorScrollController.position.maxScrollExtent,
+      );
+      _conventionEditorScrollController.animateTo(
+        clamped,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+      );
+    }
+
+    if (_conventionLineStatusScrollController.hasClients) {
+      const statusRowHeight = 28.0;
+      final targetOffset = ((k - 1) * statusRowHeight) - 20.0;
+      final clamped = targetOffset.clamp(
+        0.0,
+        _conventionLineStatusScrollController.position.maxScrollExtent,
+      );
+      _conventionLineStatusScrollController.animateTo(
+        clamped,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+      );
     }
   }
 
@@ -3144,7 +3424,12 @@ class _HomeScreenState extends State<HomeScreen>
     while (lines.length < clipIndex) {
       lines.add('');
     }
-    lines[clipIndex - 1] = newLine;
+    String finalNewLine = newLine;
+    if (clipIndex - 1 < rawLines.length && rawLines[clipIndex - 1].contains('%')) {
+      final postPercent = rawLines[clipIndex - 1].split('%').sublist(1).join('%');
+      finalNewLine = '$newLine%$postPercent';
+    }
+    lines[clipIndex - 1] = finalNewLine;
     final updatedText = lines.join('\n');
 
     final oldSel = _conventionEditorController.selection;
@@ -3154,6 +3439,11 @@ class _HomeScreenState extends State<HomeScreen>
         oldSel.end <= updatedText.length) {
       _conventionEditorController.selection = oldSel;
     }
+    if (clip.originalFilePath != null) {
+      _livePastedOverrides[clip.originalFilePath!] = finalNewLine;
+      _livePastedLineNumbers[clip.originalFilePath!] = clipIndex;
+    }
+    _evaluateConventionMatches();
 
     setState(() {
       _isStudioPendingSave = true;
@@ -3207,14 +3497,40 @@ class _HomeScreenState extends State<HomeScreen>
           : (_project.activeCamera == 'ALL' ? 'A' : _project.activeCamera);
 
       final records = List<ShotRecord>.from(_project.log.records);
-      final existingIdx = records.indexWhere(
-        (r) =>
-            (chapter.isEmpty || r.chapter.trim() == chapter) &&
-            r.scene.trim() == scene &&
-            (r.plane ?? '').trim() == plane &&
-            r.take.trim() == take,
-      );
+      int existingIdx = -1;
 
+      // a) Primary: If prop.associatedRecord != null, search by ID:
+      if (prop.associatedRecord != null) {
+        existingIdx = records.indexWhere(
+          (r) => r.id == prop.associatedRecord!.id,
+        );
+      }
+
+      // b) Fallback 1: If not found by ID or prop.associatedRecord == null, check if any record already has this clip in cameras:
+      if (existingIdx == -1) {
+        existingIdx = records.indexWhere(
+          (r) => r.cameras.any(
+            (c) =>
+                (c.clipName == clipNum ||
+                    (int.tryParse(c.clipName) != null &&
+                        int.tryParse(c.clipName) == int.tryParse(clipNum))) &&
+                c.cameraName.toUpperCase() == effectiveCamera.toUpperCase(),
+          ),
+        );
+      }
+
+      // c) Fallback 2: Check if any record matches (chapter, scene, plane, take):
+      if (existingIdx == -1) {
+        existingIdx = records.indexWhere(
+          (r) =>
+              (chapter.isEmpty || r.chapter.trim() == chapter) &&
+              r.scene.trim() == scene &&
+              (r.plane ?? '').trim() == plane &&
+              r.take.trim() == take,
+        );
+      }
+
+      final int targetIdx;
       if (existingIdx != -1) {
         final existing = records[existingIdx];
         final updatedCameras = List<CameraTakeRecord>.from(existing.cameras);
@@ -3231,17 +3547,27 @@ class _HomeScreenState extends State<HomeScreen>
           );
         }
 
-        records[existingIdx] = existing.copyWith(
+        records[existingIdx] = ShotRecord(
+          id: existing.id,
           chapter: chapter.isNotEmpty ? chapter : existing.chapter,
+          scene: scene.isNotEmpty ? scene : existing.scene,
+          plane: plane.isNotEmpty ? plane : null,
+          take: take.isNotEmpty ? take : existing.take,
           cameras: updatedCameras,
           reel: targetReel.isNotEmpty ? targetReel : existing.reel,
           tcIn: prop.fileTcIn ?? existing.tcIn,
           tcOut: prop.fileTcOut ?? existing.tcOut,
-          observations: notes.isNotEmpty ? notes : existing.observations,
+          observations: notes.isNotEmpty ? notes : null,
           isMos: isMos,
           isTf: isTf,
+          isDs: existing.isDs,
+          isFf: existing.isFf,
+          isGpr: existing.isGpr,
+          isDr: existing.isDr,
         );
+        targetIdx = existingIdx;
       } else {
+        // d) Fallback 3: Only if none of the above matched, create a new ShotRecord
         final newRecord = ShotRecord(
           chapter: chapter,
           scene: scene,
@@ -3258,6 +3584,7 @@ class _HomeScreenState extends State<HomeScreen>
           isTf: isTf,
         );
         records.add(newRecord);
+        targetIdx = records.length - 1;
       }
 
       final List<ShotRecord> finalRecords;
@@ -3307,39 +3634,42 @@ class _HomeScreenState extends State<HomeScreen>
         while (lines.length < clipIdx) {
           lines.add('');
         }
-        lines[clipIdx - 1] = convName;
+        String finalConvName = convName;
+        if (clipIdx - 1 < rawLines.length && rawLines[clipIdx - 1].contains('%')) {
+          final postPercent = rawLines[clipIdx - 1].split('%').sublist(1).join('%');
+          finalConvName = '$convName%$postPercent';
+        }
+        lines[clipIdx - 1] = finalConvName;
         _conventionEditorController.text = lines.join('\n');
       }
 
       await _generatePreview();
 
-      if (prop.originalFilePath != null) {
-        if (_report != null) {
-          final updated = _report!.proposals
-              .where((p) => p.originalFilePath == prop.originalFilePath)
-              .toList();
-          if (updated.isNotEmpty) {
-            setState(() {
-              _selectedStudioClip = updated.first;
-            });
-          }
-        }
-        if (_selectedStudioClip != null && records.isNotEmpty) {
-          final updatedRec = records.firstWhere(
-            (r) =>
-                (chapter.isEmpty || r.chapter.trim() == chapter) &&
-                r.scene.trim() == scene &&
-                (r.plane ?? '').trim() == plane &&
-                r.take.trim() == take,
-            orElse: () => records.last,
+      final targetRecord = records[targetIdx];
+      final updatedRecord = finalRecords.firstWhere(
+        (r) => r.id == targetRecord.id,
+        orElse: () => targetRecord,
+      );
+
+      setState(() {
+        if (_report != null && prop.originalFilePath != null) {
+          final updatedProposals = _report!.proposals.map((p) {
+            if (p.originalFilePath == prop.originalFilePath) {
+              return p.copyWith(associatedRecord: updatedRecord);
+            }
+            return p;
+          }).toList();
+          _report = DryRunReport(proposals: updatedProposals);
+          final updatedClip = updatedProposals.firstWhere(
+            (p) => p.originalFilePath == prop.originalFilePath,
           );
-          setState(() {
-            _selectedStudioClip = _selectedStudioClip!.copyWith(
-              associatedRecord: updatedRec,
-            );
-          });
+          _selectedStudioClip = updatedClip;
+        } else {
+          _selectedStudioClip = (_selectedStudioClip ?? prop).copyWith(
+            associatedRecord: updatedRecord,
+          );
         }
-      }
+      });
       if (!isAutoSave) {
         _showNotification('Metadatos de claqueta actualizados');
       }
@@ -3536,7 +3866,12 @@ class _HomeScreenState extends State<HomeScreen>
       while (lines.length < clipIdx) {
         lines.add('');
       }
-      lines[clipIdx - 1] = convName;
+      String finalConvName = convName;
+      if (clipIdx - 1 < rawLines.length && rawLines[clipIdx - 1].contains('%')) {
+        final postPercent = rawLines[clipIdx - 1].split('%').sublist(1).join('%');
+        finalConvName = '$convName%$postPercent';
+      }
+      lines[clipIdx - 1] = finalConvName;
       _conventionEditorController.text = lines.join('\n');
     }
 
@@ -3863,7 +4198,11 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
-    return Row(mainAxisSize: MainAxisSize.min, children: badges);
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerRight,
+      child: Row(mainAxisSize: MainAxisSize.min, children: badges),
+    );
   }
 
   Widget _buildStudioFileDetailsHeader(
@@ -4286,10 +4625,13 @@ class _HomeScreenState extends State<HomeScreen>
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
-                                          _buildCompanionBadges(
-                                            clip,
-                                            theme,
-                                            isDark,
+                                          Flexible(
+                                            fit: FlexFit.loose,
+                                            child: _buildCompanionBadges(
+                                              clip,
+                                              theme,
+                                              isDark,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -5230,8 +5572,8 @@ class _HomeScreenState extends State<HomeScreen>
     return LayoutBuilder(
       builder: (context, constraints) {
         final availableHeight = constraints.maxHeight;
-        final isCompactVertical = availableHeight < 620;
-        final isScrollableMode = availableHeight < 560;
+        final isCompactVertical = availableHeight < 680;
+        final isScrollableMode = availableHeight < 640;
         final cardPadding = isCompactVertical ? 8.0 : 12.0;
         final sectionSpacing = isCompactVertical ? 4.0 : 6.0;
         final fieldVerticalPadding = isCompactVertical ? 4.0 : 8.0;
@@ -5351,8 +5693,11 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         );
 
-        final videoPlayerContainer = Container(
-          key: const ValueKey('studio_video_player_container'),
+        final videoPlayerContainer = Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) => _requestStudioWorkspaceFocus(),
+          child: Container(
+            key: const ValueKey('studio_video_player_container'),
           decoration: BoxDecoration(
             color: Colors.black,
             borderRadius: BorderRadius.circular(8),
@@ -5389,7 +5734,7 @@ class _HomeScreenState extends State<HomeScreen>
                     },
                     child: GestureDetector(
                       key: const ValueKey('studio_video_gesture_detector'),
-                      onTap: () => _studioWorkspaceFocusNode.requestFocus(),
+                      onTap: _requestStudioWorkspaceFocus,
                       onDoubleTap: _resetStudioZoom,
                       child: MouseRegion(
                         cursor: _studioCurrentZoom > 1.05
@@ -5609,7 +5954,8 @@ class _HomeScreenState extends State<HomeScreen>
               ],
             ],
           ),
-        );
+        ),
+      );
 
         final videoAreaWidget = isScrollableMode
             ? SizedBox(
@@ -5673,56 +6019,60 @@ class _HomeScreenState extends State<HomeScreen>
             SizedBox(height: sectionSpacing),
 
             // Dedicated Studio Transport Bar
-            Container(
-              key: const ValueKey('studio_transport_bar'),
-              padding: EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: isCompactVertical ? 2 : 4,
-              ),
-              decoration: BoxDecoration(
-                color: theme.brightness == Brightness.dark
-                    ? const Color(0xFF1E1E24)
-                    : const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: theme.dividerColor.withValues(alpha: 0.3),
+            Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) => _requestStudioWorkspaceFocus(),
+              child: Container(
+                key: const ValueKey('studio_transport_bar'),
+                padding: EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: isCompactVertical ? 2 : 4,
                 ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Seek Scrubber Slider
-                  ValueListenableBuilder<Duration>(
-                    valueListenable: _studioDurationNotifier,
-                    builder: (context, duration, _) {
-                      return ValueListenableBuilder<Duration>(
-                        valueListenable: _studioPositionNotifier,
-                        builder: (context, position, _) {
-                          final durationMs = duration.inMilliseconds;
-                          final positionMs = position.inMilliseconds;
-                          final sliderValue = _studioIsDraggingSlider
-                              ? _studioDragSliderValue
-                              : (durationMs > 0
-                                    ? (positionMs / durationMs).clamp(
-                                        0.0,
-                                        1.0,
-                                      )
-                                    : 0.0);
+                decoration: BoxDecoration(
+                  color: theme.brightness == Brightness.dark
+                      ? const Color(0xFF1E1E24)
+                      : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: theme.dividerColor.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Seek Scrubber Slider
+                    ValueListenableBuilder<Duration>(
+                      valueListenable: _studioDurationNotifier,
+                      builder: (context, duration, _) {
+                        return ValueListenableBuilder<Duration>(
+                          valueListenable: _studioPositionNotifier,
+                          builder: (context, position, _) {
+                            final durationMs = duration.inMilliseconds;
+                            final positionMs = position.inMilliseconds;
+                            final sliderValue = _studioIsDraggingSlider
+                                ? _studioDragSliderValue
+                                : (durationMs > 0
+                                      ? (positionMs / durationMs).clamp(
+                                          0.0,
+                                          1.0,
+                                        )
+                                      : 0.0);
 
-                          return SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 3,
-                              thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 5,
+                            return SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 5,
+                                ),
+                                overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 10,
+                                ),
                               ),
-                              overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 10,
-                              ),
-                            ),
-                            child: Slider(
-                              key: const ValueKey('studio_scrubber_slider'),
-                              value: sliderValue,
-                              onChanged: (val) {
+                              child: Slider(
+                                key: const ValueKey('studio_scrubber_slider'),
+                                value: sliderValue,
+                                onChangeStart: (_) => _requestStudioWorkspaceFocus(),
+                                onChanged: (val) {
                                 setState(() {
                                   _studioIsDraggingSlider = true;
                                   _studioDragSliderValue = val;
@@ -6167,10 +6517,11 @@ class _HomeScreenState extends State<HomeScreen>
                         ],
                       ),
                     ],
-                  )
+                  ),
                 ],
               ),
             ),
+          ),
             SizedBox(height: sectionSpacing),
 
             // 3. Editable Slate Card (Intrinsic height, not Expanded)
@@ -6566,6 +6917,12 @@ class _HomeScreenState extends State<HomeScreen>
     return false;
   }
 
+  void _requestStudioWorkspaceFocus() {
+    if (!_isTextFieldFocused && mounted) {
+      _studioWorkspaceFocusNode.requestFocus();
+    }
+  }
+
   void _toggleStudioPlay() {
     if (_studioPlayer != null) {
       _studioPlayer!.playOrPause();
@@ -6810,12 +7167,18 @@ class _HomeScreenState extends State<HomeScreen>
       return KeyEventResult.handled;
     }
 
-    if (isAction && event.logicalKey == LogicalKeyboardKey.period) {
+    final isPeriod =
+        event.logicalKey == LogicalKeyboardKey.period ||
+        event.character == '.';
+    if (isAction && isPeriod) {
       _stepStudioFrame(forward: true);
       return KeyEventResult.handled;
     }
 
-    if (isAction && event.logicalKey == LogicalKeyboardKey.comma) {
+    final isComma =
+        event.logicalKey == LogicalKeyboardKey.comma ||
+        event.character == ',';
+    if (isAction && isComma) {
       _stepStudioFrame(forward: false);
       return KeyEventResult.handled;
     }
@@ -6844,15 +7207,24 @@ class _HomeScreenState extends State<HomeScreen>
           final isMediaRight = _appSettings.renamerPaneLayout == 'media_right';
 
           final widths = calculateStudioPaneWidths(totalWidth);
-          final mediaWidth = (_userStudioMediaWidth ?? widths.mediaWidth).clamp(
-            220.0,
-            650.0,
-          );
-          final conventionWidth =
-              (_userStudioConventionWidth ?? widths.conventionWidth).clamp(
-                340.0,
-                650.0,
-              );
+          const minCenterWidth = 420.0;
+          const splittersWidth = 24.0;
+          final maxPanesWidth =
+              (totalWidth - minCenterWidth - splittersWidth).clamp(300.0, double.infinity);
+
+          double rawMedia = _userStudioMediaWidth ?? widths.mediaWidth;
+          double rawConv = _userStudioConventionWidth ?? widths.conventionWidth;
+
+          if (rawMedia + rawConv > maxPanesWidth) {
+            final excess = (rawMedia + rawConv) - maxPanesWidth;
+            final mediaShare = rawMedia / (rawMedia + rawConv);
+            rawMedia =
+                (rawMedia - (excess * mediaShare)).clamp(200.0, maxPanesWidth - 240.0);
+            rawConv = (maxPanesWidth - rawMedia).clamp(240.0, 650.0);
+          }
+
+          final mediaWidth = rawMedia.clamp(200.0, 650.0);
+          final conventionWidth = rawConv.clamp(240.0, 650.0);
 
           final mediaWidget = SizedBox(
             width: mediaWidth,
@@ -6861,7 +7233,12 @@ class _HomeScreenState extends State<HomeScreen>
           final conventionWidget = _buildConventionEditorPane(
             width: conventionWidth,
           );
-          final centerWidget = Expanded(child: _buildStudioCenterInspector());
+          final centerWidget = Expanded(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 380.0),
+              child: _buildStudioCenterInspector(),
+            ),
+          );
 
           final mediaSplitter = _StudioSplitterDivider(
             onDragUpdate: (details) {
@@ -6870,7 +7247,13 @@ class _HomeScreenState extends State<HomeScreen>
                 final delta = isMediaRight
                     ? -details.delta.dx
                     : details.delta.dx;
-                _userStudioMediaWidth = (current + delta).clamp(220.0, 650.0);
+                final maxAllowed = (totalWidth -
+                        conventionWidth -
+                        minCenterWidth -
+                        splittersWidth)
+                    .clamp(200.0, 650.0);
+                _userStudioMediaWidth =
+                    (current + delta).clamp(200.0, maxAllowed);
               });
             },
             onReset: () {
@@ -6887,10 +7270,11 @@ class _HomeScreenState extends State<HomeScreen>
                 final delta = isMediaRight
                     ? details.delta.dx
                     : -details.delta.dx;
-                _userStudioConventionWidth = (current + delta).clamp(
-                  340.0,
-                  650.0,
-                );
+                final maxAllowed =
+                    (totalWidth - mediaWidth - minCenterWidth - splittersWidth)
+                        .clamp(240.0, 650.0);
+                _userStudioConventionWidth =
+                    (current + delta).clamp(240.0, maxAllowed);
               });
             },
             onReset: () {
@@ -7166,12 +7550,15 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                             // Tab 2: Conciliación
                             Padding(
-                              padding: const EdgeInsets.all(16.0),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16.0,
+                                vertical: 10.0,
+                              ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   _buildControlsBar(),
-                                  const SizedBox(height: 16),
+                                  const SizedBox(height: 8),
                                   Expanded(
                                     child: _isStudioMode
                                         ? _buildStudioWorkspace()
@@ -7207,7 +7594,7 @@ class _HomeScreenState extends State<HomeScreen>
                                                 )
                                               : _buildPreviewTable()),
                                   ),
-                                  const SizedBox(height: 16),
+                                  const SizedBox(height: 8),
                                   _buildFooter(),
                                 ],
                               ),
@@ -7241,10 +7628,10 @@ class _HomeScreenState extends State<HomeScreen>
     return Card(
       elevation: 2,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 6.0),
         child: Wrap(
-          spacing: 12,
-          runSpacing: 8,
+          spacing: 10,
+          runSpacing: 6,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             ElevatedButton.icon(
@@ -7432,6 +7819,20 @@ class _HomeScreenState extends State<HomeScreen>
                 const Text('Renombrar metadatos (.XML)'),
               ],
             ),
+            Tooltip(
+              message:
+                  'Generar metadatos XML según la norma DigitalLogic 3.2 / Proforma DL',
+              child: FilledButton.tonalIcon(
+                key: const ValueKey('open_proforma_dl_dialog_button'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                ),
+                icon: const Icon(Icons.data_object_rounded, size: 16),
+                label: const Text('Generar Metadatos XML (Proforma DL)'),
+                onPressed: _openProformaDlXmlDialog,
+              ),
+            ),
           ],
         ),
       ),
@@ -7497,27 +7898,56 @@ class _HomeScreenState extends State<HomeScreen>
     if (_report == null) {
       if (_project.log.records.isNotEmpty) {
         return Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.folder_open,
+                  size: 52,
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primary.withValues(alpha: 0.7),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Bitácora activa con ${_project.log.records.length} tomas registradas',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Haz clic en "Selector de Carpeta de Medios" para conciliar los clips con la Cámara ${_project.activeCamera}.',
+                  style: TextStyle(
+                    color: Theme.of(context).hintColor,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+      return Center(
+        child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                Icons.folder_open,
+                Icons.video_library_outlined,
                 size: 52,
-                color: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.7),
+                color: Theme.of(context).hintColor.withValues(alpha: 0.5),
               ),
               const SizedBox(height: 12),
-              Text(
-                'Bitácora activa con ${_project.log.records.length} tomas registradas',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
+              const Text(
+                'Bienvenido al Renombrador de Medios',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               ),
               const SizedBox(height: 6),
               Text(
-                'Haz clic en "Selector de Carpeta de Medios" para conciliar los clips con la Cámara ${_project.activeCamera}.',
+                'Puedes seleccionar una Carpeta de Medios o Importar un Excel para comenzar.',
                 style: TextStyle(
                   color: Theme.of(context).hintColor,
                   fontSize: 13,
@@ -7525,31 +7955,6 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ],
           ),
-        );
-      }
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.video_library_outlined,
-              size: 52,
-              color: Theme.of(context).hintColor.withValues(alpha: 0.5),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Bienvenido al Renombrador de Medios',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Puedes seleccionar una Carpeta de Medios o Importar un Excel para comenzar.',
-              style: TextStyle(
-                color: Theme.of(context).hintColor,
-                fontSize: 13,
-              ),
-            ),
-          ],
         ),
       );
     }
@@ -7559,9 +7964,10 @@ class _HomeScreenState extends State<HomeScreen>
         .toList();
     if (mediaClips.isEmpty) {
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             Icon(
               Icons.find_in_page_outlined,
               size: 48,
@@ -7581,6 +7987,7 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ],
+        ),
         ),
       );
     }

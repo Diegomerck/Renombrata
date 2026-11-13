@@ -6,6 +6,7 @@ class LineNumberedTextField extends StatefulWidget {
   final TextEditingController controller;
   final UndoHistoryController? undoController;
   final FocusNode? focusNode;
+  final ScrollController? scrollController;
   final int? activeLineNumber;
   final ValueChanged<String>? onChanged;
   final String? hintText;
@@ -18,6 +19,7 @@ class LineNumberedTextField extends StatefulWidget {
     required this.controller,
     this.undoController,
     this.focusNode,
+    this.scrollController,
     this.activeLineNumber,
     this.onChanged,
     this.hintText,
@@ -33,13 +35,20 @@ class LineNumberedTextField extends StatefulWidget {
 class _LineNumberedTextFieldState extends State<LineNumberedTextField> {
   late final ScrollController _textScrollController;
   late final ScrollController _gutterScrollController;
+  bool _ownsTextScrollController = false;
 
   static const double _verticalPadding = 12.0;
 
   @override
   void initState() {
     super.initState();
-    _textScrollController = ScrollController();
+    if (widget.scrollController != null) {
+      _textScrollController = widget.scrollController!;
+      _ownsTextScrollController = false;
+    } else {
+      _textScrollController = ScrollController();
+      _ownsTextScrollController = true;
+    }
     _gutterScrollController = ScrollController();
 
     _textScrollController.addListener(_syncGutterScroll);
@@ -69,7 +78,9 @@ class _LineNumberedTextFieldState extends State<LineNumberedTextField> {
   void dispose() {
     _textScrollController.removeListener(_syncGutterScroll);
     widget.controller.removeListener(_handleTextChanged);
-    _textScrollController.dispose();
+    if (_ownsTextScrollController) {
+      _textScrollController.dispose();
+    }
     _gutterScrollController.dispose();
     super.dispose();
   }

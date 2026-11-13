@@ -430,7 +430,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
 
   bool _handleHardwareKey(KeyEvent event) {
     if (event is! KeyDownEvent) return false;
-    final isCtrl = HardwareKeyboard.instance.isControlPressed;
+    final isCtrl = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
     final isAlt = HardwareKeyboard.instance.isAltPressed;
 
     if (event.logicalKey == LogicalKeyboardKey.pageDown ||
@@ -1592,12 +1592,24 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
             _goToClip(_currentIndex - 1);
           }
         },
+        const SingleActivator(LogicalKeyboardKey.arrowLeft, meta: true): () {
+          if (_currentIndex > 0) {
+            _goToClip(_currentIndex - 1);
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.arrowRight, meta: true): () {
+          if (_currentIndex < widget.playlist.length - 1) {
+            _goToClip(_currentIndex + 1);
+          }
+        },
         const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): () {
           if (_currentIndex > 0) {
             _goToClip(_currentIndex - 1);
           }
         },
         const SingleActivator(LogicalKeyboardKey.enter, control: true):
+            _handleSaveAndNext,
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true):
             _handleSaveAndNext,
         const SingleActivator(LogicalKeyboardKey.enter): _handleSaveAndNext,
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -1607,7 +1619,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
         autofocus: true,
         onKeyEvent: (node, event) {
           if (event is KeyDownEvent) {
-            final isCtrl = HardwareKeyboard.instance.isControlPressed;
+            final isCtrl = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
             final isAlt = HardwareKeyboard.instance.isAltPressed;
 
             if (event.logicalKey == LogicalKeyboardKey.space) {

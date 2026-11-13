@@ -394,19 +394,19 @@ void main() {
       expect(find.text('4 líneas'), findsOneWidget);
 
       // Line 1: Match
-      expect(find.text('Línea 1: A001C001.MP4'), findsOneWidget);
+      expect(find.textContaining('Línea 1: A001C001.MP4'), findsOneWidget);
 
       // Line 2: Duplicate conflict on disk
-      expect(find.text('Línea 2: Conflicto en disco (Clip #02 duplicado)'), findsOneWidget);
+      expect(find.textContaining('Línea 2: Conflicto en disco (Clip #02 duplicado)'), findsOneWidget);
 
       // Line 3: Missing on disk
-      expect(find.text('Línea 3: Sin archivo en disco (Clip #03)'), findsOneWidget);
+      expect(find.textContaining('Línea 3: Sin archivo en disco (Clip #03)'), findsOneWidget);
 
       // Line 4: Unrecognized format
-      expect(find.text('Línea 4: Formato de convención no reconocido'), findsOneWidget);
+      expect(find.textContaining('Línea 4: Formato de convención no reconocido'), findsOneWidget);
 
       // Tapping on Line 1 focuses/scrolls to that clip without error
-      await tester.tap(find.text('Línea 1: A001C001.MP4'));
+      await tester.tap(find.textContaining('Línea 1: A001C001.MP4'));
       await tester.pumpAndSettle();
     });
 
@@ -543,6 +543,59 @@ void main() {
       expect(find.text('A001C001.MP4'), findsOneWidget);
       expect(find.text('A001C002.MP4'), findsOneWidget);
       expect(find.text('A001C003.MP4'), findsOneWidget);
+    });
+
+    testWidgets('multi-camera clips (Cam A and Cam B) with same clip index are not flagged as duplicate conflicts', (tester) async {
+      setupDesktopWindow(tester);
+
+      final project = RenombrataProject(
+        log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
+        defaultReel: '0003',
+        activeCamera: 'ALL',
+      );
+
+      final propA = RenameProposal(
+        originalFilePath: '/media/A0003C006_260817AB.MP4',
+        proposedFileName: 'A0003C006_260817AB.MP4',
+        fileReel: 'A0003',
+        status: ProposalStatus.unmatchedClip,
+      );
+
+      final propB = RenameProposal(
+        originalFilePath: '/media/B0003C006_260817AB.MP4',
+        proposedFileName: 'B0003C006_260817AB.MP4',
+        fileReel: 'B0003',
+        status: ProposalStatus.unmatchedClip,
+      );
+
+      final report = DryRunReport(proposals: [propA, propB]);
+
+      await tester.pumpWidget(createHomeScreen(project: project, report: report));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Editor de Texto'));
+      await tester.pumpAndSettle();
+
+      final textFields = find.byType(TextField);
+      await tester.enterText(
+        textFields.last,
+        'MN_080626_1_T1_A0003_6_D1_U1%A0003_006_080626_U1\nMN_080626_1_T1_B0003_6_D1_U1%B0003_006_080626_U1',
+      );
+      await tester.pumpAndSettle();
+
+      final homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      final duplicateConflicts = homeState.duplicateClipConflicts as Map<String, String>;
+      final liveOverrides = homeState.livePastedOverrides as Map<String, String>;
+
+      // Neither camera should be marked as duplicate conflict
+      expect(duplicateConflicts, isEmpty, reason: 'Camera A and Camera B must not conflict as duplicates of each other');
+
+      // Both should have their respective live overrides matched
+      expect(liveOverrides['/media/A0003C006_260817AB.MP4'], contains('A0003_6'));
+      expect(liveOverrides['/media/B0003C006_260817AB.MP4'], contains('B0003_6'));
     });
   });
 }

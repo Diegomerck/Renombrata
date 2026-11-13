@@ -130,5 +130,98 @@ void main() {
       // Manual save displays notification banner
       expect(find.text('Metadatos de claqueta actualizados'), findsOneWidget);
     });
+
+    testWidgets('editing slate fields multiple times updates the existing record without creating duplicate/ghost takes', (tester) async {
+      setupDesktopWindow(tester);
+
+      final project = RenombrataProject(
+        showChapter: true,
+        showPlane: true,
+        log: ShootingLog(metadata: ShootingLogMetadata.empty(), records: []),
+        defaultReel: 'A001',
+        activeCamera: 'A',
+      );
+
+      final prop = RenameProposal(
+        originalFilePath: '/media/A001C001_260817AB.MP4',
+        proposedFileName: 'A001C001_260817AB.MP4',
+        fileReel: 'A001',
+        status: ProposalStatus.unmatchedClip,
+      );
+
+      final report = DryRunReport(proposals: [prop]);
+
+      await tester.pumpWidget(createHomeScreen(project: project, report: report));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
+      await tester.pumpAndSettle();
+
+      final sceneFieldFinder = find.byKey(const ValueKey('studio_slate_scene_field'));
+      final takeFieldFinder = find.byKey(const ValueKey('studio_slate_take_field'));
+      final planeFieldFinder = find.byKey(const ValueKey('studio_slate_plane_field'));
+      final chapterFieldFinder = find.byKey(const ValueKey('studio_slate_chapter_field'));
+
+      // 1. First edit: scene -> '10'
+      await tester.enterText(sceneFieldFinder, '10');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+
+      var homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      var currentProj = homeState.project as RenombrataProject;
+      expect(currentProj.log.records.length, equals(1));
+      expect(currentProj.log.records.first.scene, equals('10'));
+      final recordId = currentProj.log.records.first.id;
+
+      // 2. Second edit: scene -> '11'
+      await tester.enterText(sceneFieldFinder, '11');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+
+      homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      currentProj = homeState.project as RenombrataProject;
+      expect(currentProj.log.records.length, equals(1), reason: 'Must not create a duplicate record when changing scene');
+      expect(currentProj.log.records.first.scene, equals('11'));
+      expect(currentProj.log.records.first.id, equals(recordId), reason: 'Must preserve the same record ID');
+
+      // 3. Third edit: take -> '2'
+      await tester.enterText(takeFieldFinder, '2');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+
+      homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      currentProj = homeState.project as RenombrataProject;
+      expect(currentProj.log.records.length, equals(1), reason: 'Must not create a duplicate record when changing take');
+      expect(currentProj.log.records.first.take, equals('2'));
+      expect(currentProj.log.records.first.id, equals(recordId));
+
+      // 4. Fourth edit: plane -> 'A'
+      await tester.enterText(planeFieldFinder, 'A');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+
+      homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      currentProj = homeState.project as RenombrataProject;
+      expect(currentProj.log.records.length, equals(1), reason: 'Must not create a duplicate record when changing plane');
+      expect(currentProj.log.records.first.plane, equals('A'));
+      expect(currentProj.log.records.first.id, equals(recordId));
+
+      // 5. Fifth edit: chapter -> '5'
+      await tester.enterText(chapterFieldFinder, '5');
+      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pumpAndSettle();
+
+      homeState = tester.state(find.byType(HomeScreen)) as dynamic;
+      currentProj = homeState.project as RenombrataProject;
+      expect(currentProj.log.records.length, equals(1), reason: 'Must not create a duplicate record when changing chapter');
+      expect(currentProj.log.records.first.chapter, equals('5'));
+      expect(currentProj.log.records.first.scene, equals('11'));
+      expect(currentProj.log.records.first.take, equals('2'));
+      expect(currentProj.log.records.first.plane, equals('A'));
+      expect(currentProj.log.records.first.id, equals(recordId));
+    });
   });
 }

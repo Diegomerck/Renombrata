@@ -90,6 +90,72 @@ class DigitalLogicXmlService {
         '</digitallogic>\n';
   }
 
+  /// Generates a valid XML document strictly conforming to the DigitalLogic 3.2
+  /// / Proforma_DL schema used by Televisa / ViX post-production.
+  static String generateProformaDlXml({
+    required String produccionNombre,
+    required String convencionNombre,
+    required String clipName,
+    String fuente = 'Portátil',
+    String ubicacion = 'Exterior',
+    String temporalidad = 'Día',
+    bool tomaSeleccionada = true,
+    String pais = 'MEXICO',
+    String ciudad = 'CDMX',
+    String lugar = '',
+    String vfxCompuestos = 'No',
+    String descripcionVfx = '',
+    String observacionesVideo = 'OK SLOG 3',
+    String observacionesAudio = 'MIX Y MULTITRACK',
+    String sinopsis = '',
+    String operadorIngesta = '',
+  }) {
+    final safeProduccion = _escapeXml(produccionNombre);
+    final safeConvencion = _escapeXml(convencionNombre);
+    final safeClipName = _escapeXml(clipName);
+    final safeFuente = _escapeXml(fuente);
+    final safeUbicacion = _escapeXml(ubicacion);
+    final safeTemporalidad = _escapeXml(temporalidad);
+    final safeToma = tomaSeleccionada ? 'SÍ' : 'NO';
+    final safePais = _escapeXml(pais);
+    final safeCiudad = _escapeXml(ciudad);
+    final safeLugar = _escapeXml(lugar);
+    final safeVfxCompuestos = _escapeXml(vfxCompuestos);
+    final safeObsVideo = _escapeXml(observacionesVideo);
+    final safeObsAudio = _escapeXml(observacionesAudio);
+    final safeSinopsis = _escapeXml(sinopsis);
+    final safeOperador = _escapeXml(operadorIngesta);
+
+    final safeVfxTag = descripcionVfx.trim().isEmpty
+        ? '<descripcionVfx/>'
+        : '<descripcionVfx>${_escapeXml(descripcionVfx)}</descripcionVfx>';
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        '<!DOCTYPE Proforma_DL>\n'
+        '<digitallogic version="3.2">\n'
+        '    <clip>\n'
+        '        <metadata>\n'
+        '            <produccionNombre>$safeProduccion</produccionNombre>\n'
+        '            <convencionNombre>$safeConvencion</convencionNombre>\n'
+        '            <clipName>$safeClipName</clipName>\n'
+        '            <fuente>$safeFuente</fuente>\n'
+        '            <ubicacion>$safeUbicacion</ubicacion>\n'
+        '            <temporalidad>$safeTemporalidad</temporalidad>\n'
+        '            <tomaSeleccionada>$safeToma</tomaSeleccionada>\n'
+        '            <pais>$safePais</pais>\n'
+        '            <ciudad>$safeCiudad</ciudad>\n'
+        '            <lugar>$safeLugar</lugar>\n'
+        '            <vfxCompuestos>$safeVfxCompuestos</vfxCompuestos>\n'
+        '            $safeVfxTag\n'
+        '            <observacionesVideo>$safeObsVideo</observacionesVideo>\n'
+        '            <observacionesAudio>$safeObsAudio</observacionesAudio>\n'
+        '            <sinopsis>$safeSinopsis</sinopsis>\n'
+        '            <operadorIngesta>$safeOperador</operadorIngesta>\n'
+        '        </metadata>\n'
+        '    </clip>\n'
+        '</digitallogic>\n';
+  }
+
   /// Writes the [xmlContent] to a sidecar file named `{mediaFileDirectory}/{baseMediaName}.xml`.
   ///
   /// Throws a [FileSystemException] if the file exists and [overwrite] is `false`.

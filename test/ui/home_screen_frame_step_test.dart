@@ -286,6 +286,85 @@ void main() {
       expect(player.seeks.length, 2);
     });
 
+    testWidgets('character "." and "," step frames across keyboard layouts', (
+      tester,
+    ) async {
+      setupWindow(tester, const Size(1920, 1080));
+      final player = _SeekFakePlayer();
+      await openStudio(tester, player, '/media/A001C001_260817AB.MP4');
+
+      final dynamic state = tester.state(find.byType(HomeScreen));
+      (state.studioWorkspaceFocusNode as FocusNode).requestFocus();
+      await tester.pump();
+      player._stream.emitDuration(const Duration(seconds: 10));
+      await tester.pump();
+      state.studioPositionNotifier.value = const Duration(seconds: 2);
+
+      await tester.sendKeyEvent(
+        LogicalKeyboardKey.period,
+        character: '.',
+      );
+      await tester.pump();
+      expect(player.seeks, [const Duration(seconds: 2, milliseconds: 40)]);
+
+      await tester.sendKeyEvent(
+        LogicalKeyboardKey.comma,
+        character: ',',
+      );
+      await tester.pump();
+      expect(player.seeks.length, 2);
+    });
+
+    testWidgets(
+      'clicking video container, transport bar, or slider requests workspace focus',
+      (tester) async {
+        setupWindow(tester, const Size(1920, 1080));
+        final player = _SeekFakePlayer();
+        await openStudio(tester, player, '/media/A001C001_260817AB.MP4');
+
+        final dynamic state = tester.state(find.byType(HomeScreen));
+        final focusNode = state.studioWorkspaceFocusNode as FocusNode;
+
+        // Unfocus workspace first
+        focusNode.unfocus();
+        await tester.pump();
+        expect(focusNode.hasFocus, isFalse);
+
+        // 1. Click video container
+        final videoContainer = find.byKey(
+          const ValueKey('studio_video_player_container'),
+        );
+        expect(videoContainer, findsOneWidget);
+        await tester.tap(videoContainer);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(focusNode.hasFocus, isTrue);
+
+        // Unfocus again
+        focusNode.unfocus();
+        await tester.pump();
+        expect(focusNode.hasFocus, isFalse);
+
+        // 2. Click transport bar
+        final transportBar = find.byKey(const ValueKey('studio_transport_bar'));
+        expect(transportBar, findsOneWidget);
+        await tester.tap(transportBar);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(focusNode.hasFocus, isTrue);
+
+        // Unfocus again
+        focusNode.unfocus();
+        await tester.pump();
+        expect(focusNode.hasFocus, isFalse);
+
+        // 3. Click scrubber slider
+        final slider = find.byKey(const ValueKey('studio_scrubber_slider'));
+        expect(slider, findsOneWidget);
+        await tester.tap(slider);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(focusNode.hasFocus, isTrue);
+      },
+    );
+
     testWidgets('frame buttons are disabled for raw (CRM) clips', (
       tester,
     ) async {

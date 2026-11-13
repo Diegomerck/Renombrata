@@ -274,6 +274,8 @@ class ConventionGeneratorService {
       }
     }
 
+    String? rawReel;
+    String? camera;
     if (tokens.isNotEmpty) {
       final candidateReel = tokens.last;
       final isTake = RegExp(
@@ -290,11 +292,12 @@ class ConventionGeneratorService {
           caseSensitive: false,
         ).hasMatch(candidateReel);
         if (reelMatch != null || isSpecialReel) {
-          final rawReel = tokens.removeLast();
+          rawReel = tokens.removeLast();
           // Extract numeric portion if it had a camera prefix
           if (reelMatch != null &&
               reelMatch.group(1) != null &&
               reelMatch.group(2) != null) {
+            camera = reelMatch.group(1)!.toUpperCase();
             reel = reelMatch.group(2);
           } else {
             reel = rawReel;
@@ -376,6 +379,8 @@ class ConventionGeneratorService {
       'plane': ?plane,
       'take': take,
       'reel': ?reel,
+      'rawReel': ?rawReel,
+      'camera': ?camera,
       'clipIndex': ?clipIndex,
       'day': ?day,
       'unit': ?unit,

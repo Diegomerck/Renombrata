@@ -1,31 +1,31 @@
 # Renombrata - Agent Guidelines & Workflow Architecture
 
-This document defines the dual-agent collaboration model and engineering standards for **Renombrata**, a professional desktop media reconciliation tool for film and television post-production, built with Flutter for macOS and Windows.
+This document defines the single-conversation workflow model and engineering standards for **Renombrata**, a professional desktop media reconciliation tool for film and television post-production, built with Flutter for macOS and Windows.
 
 ---
 
-## 1. Dual-Agent Roles & Responsibilities
+## 1. Single-Conversation Workflow Architecture
 
-Development on Renombrata follows a strict two-agent pairing model:
+Renombrata development operates within a single-conversation pair programming model designed for token quota efficiency:
 
-### Agent 1: Roadmap Planning & Architecture Partner
-* **Primary Role**: Strategic planning, architectural consulting, UX review, root-cause diagnosis, and task prompt generation.
-* **Strict Constraint**: **Never edits source code or project files directly.**
-* **Responsibilities**:
-  1. Collaborate with Diego on features, milestones, and user experience.
-  2. Analyze technical issues, investigate error logs, and assess architectural alternatives.
-  3. Produce comprehensive, production-ready **Task Prompts** formatted for copy-paste handoff to the Implementation Agent.
+### Workflow Triggers & Execution Modes
+
+| Mode / Trigger | When to Use | Agent Behavior |
+| :--- | :--- | :--- |
+| *(Default - No prefix)* | Architecture discussions, brainstorming, UI/UX scoping, design decisions | **PLANNING ONLY**: Zero code edits, zero builds or tests. The agent clarifies specs, assesses task complexity, and declares the recommended execution tier. |
+| **`IMPLEMENTATION`** | Starting message with `IMPLEMENTATION` | **SUBAGENT EXECUTION**: Automatically dispatches a subagent at the assessed tier (`flash` by default to preserve quota, `pro` for high complexity), runs `flutter test`, and provides a concise summary. Draws from Gemini quota. |
+| **`IMPLEMENT: INHERIT`** | Starting message with `IMPLEMENT: INHERIT` | **FORCED INHERIT SUBAGENT**: Dispatches the subagent strictly using `Model: "inherit"`. The subagent directly adopts whichever model and provider is currently selected in the main chat model picker (e.g., Claude Opus, Claude Sonnet, GPT-4o), drawing strictly from that specific quota. |
+| **`QUICK FIX`** | Starting message with `QUICK FIX` | **DIRECT EDIT**: Applies trivial edits (single typo, 1-line styling) directly without subagent overhead. |
+
+### Complexity & Execution Tiers (Assessed in Planning)
+* **Standard Tier (`Model: "flash"`)**: 1–2 files, localized UI styling, widget adjustments, simple components. Keeps credit usage minimal.
+* **High Tier (`Model: "pro"`)**: Multi-file refactors, reconciliation engine algorithms, state machine logic, complex tests.
+* **Inherited Mode (`Model: "inherit"`)**: Triggered via `IMPLEMENT: INHERIT`. Adopts the model currently active in the chat picker.
+* *Safeguard: Expensive models (e.g. Argon) are NEVER invoked unless explicitly requested by name or active in inherit mode.*
+
+### Communication & Engineering Standards
 * **Communication**: Strictly in **English** at all times.
-
-### Agent 2: Implementation Agent
-* **Primary Role**: Code execution, test maintenance, and build verification.
-* **Responsibilities**:
-  1. Ingest task prompts provided by Diego from the Planning Partner.
-  2. Implement features and bug fixes across `lib/` (models, services, UI, utils).
-  3. Write and update unit and widget tests in `test/`.
-  4. Ensure `flutter test` always passes with 0 failures before completing any task.
-  5. Adhere to the Proactive Flutter Hot Reload Rule when developing interactively.
-* **Communication**: Strictly in **English** at all times.
+* **Testing Integrity**: `flutter test` must always pass with 0 failures before completing any task.
 
 ---
 
