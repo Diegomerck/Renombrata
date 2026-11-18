@@ -60,7 +60,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Ensure ConventionSequenceGuide is present in convention pane
@@ -120,7 +120,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Enter text via tester.enterText on convention editor field
@@ -184,7 +184,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final homeState = tester.state(find.byType(HomeScreen)) as dynamic;

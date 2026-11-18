@@ -1,5 +1,5 @@
 import 'package:renombrata/src/ui/dialogs/folder_ingestion_dialog.dart';
-import 'package:renombrata/src/ui/dialogs/proforma_dl_xml_dialog.dart';
+import 'package:renombrata/src/ui/tabs/metadata_generator_tab.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
@@ -483,14 +483,14 @@ class _HomeScreenState extends State<HomeScreen>
     }
     _conventionEditorController.project = _project;
     _reelController.text = _project.defaultReel;
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
-      if (_tabController.index == 0) {
+      if (_tabController.index != 1) {
         if (_appSettings.pauseVideoOnTabSwitch) {
           _studioPlayer?.pause();
           _studioIsPlayingNotifier.value = false;
         }
-      } else if (_tabController.index == 1) {
+      } else {
         _restoreStudioPlayerIfNeeded();
       }
     });
@@ -1260,28 +1260,8 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  Future<void> _openProformaDlXmlDialog() async {
-    final files = _report?.proposals
-        .where((p) => !p.isCompanionFile)
-        .map((p) => p.originalFilePath)
-        .whereType<String>()
-        .toList();
-
-    await ProformaDlXmlDialog.show(
-      context: context,
-      initialFolderPath: _mediaFolderPath,
-      project: _project,
-      mediaFiles: (files != null && files.isNotEmpty) ? files : null,
-      onGenerated: (count) {
-        if (mounted) {
-          _showNotification(
-            'Se generaron $count sidecars XML (Proforma DL 3.2) exitosamente.',
-            isError: false,
-          );
-          _generatePreview();
-        }
-      },
-    );
+  void _openMetadataGeneratorTab() {
+    _tabController.animateTo(2);
   }
 
   Future<void> _pickMediaFolder() async {
@@ -7389,7 +7369,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (_isDirty) projectTitle += ' *';
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: Text(
@@ -7473,14 +7453,18 @@ class _HomeScreenState extends State<HomeScreen>
                 ? const Color(0xFF8E8E9F)
                 : const Color(0xFF64748B),
             onTap: (index) {
-              if (index == 0 && _appSettings.pauseVideoOnTabSwitch) {
+              if (index != 1 && _appSettings.pauseVideoOnTabSwitch) {
                 _studioPlayer?.pause();
                 _studioIsPlayingNotifier.value = false;
               }
             },
             tabs: const [
               Tab(icon: Icon(Icons.edit_document), text: 'Bitácora Digital'),
-              Tab(icon: Icon(Icons.sync), text: 'Renombrador de Medios'),
+              Tab(icon: Icon(Icons.sync), text: 'Renombrador'),
+              Tab(
+                icon: Icon(Icons.data_object_rounded),
+                text: 'Generador de Metadata',
+              ),
             ],
           ),
         ),
@@ -7520,7 +7504,11 @@ class _HomeScreenState extends State<HomeScreen>
           child: Focus(
             autofocus: true,
             child: DropTarget(
-              onDragEntered: (details) => setState(() => _isDragging = true),
+              onDragEntered: (details) {
+                if (_tabController.index != 2) {
+                  setState(() => _isDragging = true);
+                }
+              },
               onDragExited: (details) => setState(() => _isDragging = false),
               onDragDone: (details) {
                 setState(() => _isDragging = false);
@@ -7598,6 +7586,25 @@ class _HomeScreenState extends State<HomeScreen>
                                   _buildFooter(),
                                 ],
                               ),
+                            ),
+                            // Tab 3: Generador de Metadata
+                            MetadataGeneratorTab(
+                              initialFolderPath: _mediaFolderPath,
+                              project: _project,
+                              mediaFiles: _report?.proposals
+                                  .where((p) => !p.isCompanionFile)
+                                  .map((p) => p.originalFilePath)
+                                  .whereType<String>()
+                                  .toList(),
+                              onGenerated: (count) {
+                                if (mounted) {
+                                  _showNotification(
+                                    'Se generaron $count sidecars XML (Proforma DL 3.2) exitosamente.',
+                                    isError: false,
+                                  );
+                                  _generatePreview();
+                                }
+                              },
                             ),
                           ],
                         ),
@@ -7830,7 +7837,7 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
                 icon: const Icon(Icons.data_object_rounded, size: 16),
                 label: const Text('Generar Metadatos XML (Proforma DL)'),
-                onPressed: _openProformaDlXmlDialog,
+                onPressed: _openMetadataGeneratorTab,
               ),
             ),
           ],
@@ -8694,8 +8701,12 @@ class _HomeScreenState extends State<HomeScreen>
 
     bool anyHandled = false;
     for (final path in droppedPaths) {
-      // 1. Directory -> Media Folder
+      // 1. Directory -> Media Folder (skipped on Tab 3 where MetadataGeneratorTab handles it)
       if (Directory(path).existsSync()) {
+        if (_tabController.index == 2) {
+          anyHandled = true;
+          continue;
+        }
         final scannedFiles = MediaScannerService.scanDirectory(
           path,
           searchSubdirectories: true,
@@ -8804,8 +8815,8 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
-    // 6. Direct File Drag & Drop (Individual Media Files)
-    if (!anyHandled) {
+    // 6. Direct File Drag & Drop (Individual Media Files; skipped on Tab 3)
+    if (!anyHandled && _tabController.index != 2) {
       final mediaExtensions = {
         '.mp4',
         '.mov',

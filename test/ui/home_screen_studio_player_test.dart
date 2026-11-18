@@ -133,7 +133,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Navigate to Renombrador de Medios -> Modo Estudio
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -166,7 +166,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: report));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -218,7 +218,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: report));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -310,7 +310,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: report));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -351,7 +351,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: mxfReport));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -387,7 +387,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: crmReport));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -441,7 +441,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: wavReport));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -496,7 +496,7 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -583,7 +583,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: crmReport));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -616,7 +616,7 @@ void main() {
       await tester.pumpWidget(createHomeScreen(project: project, report: crmReport));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');
@@ -659,7 +659,7 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');

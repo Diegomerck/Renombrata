@@ -5,6 +5,7 @@ import 'package:renombrata/src/models/renombrata_project.dart';
 import 'package:renombrata/src/models/shooting_log.dart';
 import 'package:renombrata/src/ui/dialogs/proforma_dl_xml_dialog.dart';
 import 'package:renombrata/src/ui/home_screen.dart';
+import 'package:renombrata/src/ui/tabs/metadata_generator_tab.dart';
 
 void main() {
   void setupDesktop(WidgetTester tester) {
@@ -14,31 +15,39 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
+  RenombrataProject buildNeutralProject({
+    String ingestor = '',
+    String location = '',
+    String production = 'INFAM',
+  }) {
+    return RenombrataProject(
+      defaultReel: '001',
+      activeCamera: 'A',
+      log: ShootingLog(
+        metadata: ShootingLogMetadata(
+          nomenclature: production,
+          date: '2026-11-12',
+          unit: 'U11B',
+          day: 'D40',
+          producer: '',
+          production: production,
+          location: location,
+          audioFormat: '48kHz 24bit',
+          frameRate: '23.98',
+          videoCodec: 'XAVC',
+          responsibleEngineer: '',
+          ingestor: ingestor,
+        ),
+        records: [],
+      ),
+    );
+  }
+
   group('ProformaDlXmlDialog Tests', () {
-    testWidgets('renders dialog title, batch defaults, and empty state when no files', (tester) async {
+    testWidgets('renders neutral empty defaults when project metadata is empty', (tester) async {
       setupDesktop(tester);
 
-      final project = RenombrataProject(
-        defaultReel: '001',
-        activeCamera: 'A',
-        log: ShootingLog(
-          metadata: ShootingLogMetadata(
-            nomenclature: 'INOCENCIA',
-            date: '2026-11-12',
-            unit: 'UCR14',
-            day: 'D03',
-            producer: 'Televisa',
-            production: 'INOCENCIA',
-            location: 'TERMINAL DE AUTOBUSES DEL SUR',
-            audioFormat: '48kHz 24bit',
-            frameRate: '23.98',
-            videoCodec: 'XAVC',
-            responsibleEngineer: 'Ing. Test',
-            ingestor: 'ANGEL ESTRADA DIAZ',
-          ),
-          records: [],
-        ),
-      );
+      final project = buildNeutralProject();
 
       await tester.pumpWidget(
         MaterialApp(
@@ -53,34 +62,23 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Generador de Metadatos XML (DigitalLogic 3.2 / Proforma DL)'), findsOneWidget);
-      expect(find.text('ANGEL ESTRADA DIAZ'), findsOneWidget);
-      expect(find.text('TERMINAL DE AUTOBUSES DEL SUR'), findsOneWidget);
       expect(find.text('No se detectaron archivos de video en la carpeta seleccionada.'), findsOneWidget);
+
+      // Ensure no hardcoded production strings appear anywhere
+      expect(find.text('ANGEL ESTRADA DIAZ'), findsNothing);
+      expect(find.text('TERMINAL DE AUTOBUSES DEL SUR'), findsNothing);
+      expect(find.text('LLEGA INOCENCIA EN AUTOBUS'), findsNothing);
+      expect(find.text('OK SLOG 3'), findsNothing);
+      expect(find.text('MIX Y MULTITRACK'), findsNothing);
+      expect(find.text('U14B'), findsNothing);
     });
 
-    testWidgets('populates detected media files, shows parsed convention, and displays clip items', (tester) async {
+    testWidgets('pulls ingestor and location from project metadata when non-empty', (tester) async {
       setupDesktop(tester);
 
-      final project = RenombrataProject(
-        defaultReel: '001',
-        activeCamera: 'A',
-        log: ShootingLog(
-          metadata: ShootingLogMetadata(
-            nomenclature: 'INOCENCIA',
-            date: '2026-11-12',
-            unit: 'UCR14',
-            day: 'D03',
-            producer: 'Televisa',
-            production: 'INOCENCIA',
-            location: 'TERMINAL DE AUTOBUSES DEL SUR',
-            audioFormat: '48kHz',
-            frameRate: '23.98',
-            videoCodec: 'XAVC',
-            responsibleEngineer: 'Ing. Test',
-            ingestor: 'ANGEL ESTRADA DIAZ',
-          ),
-          records: [],
-        ),
+      final project = buildNeutralProject(
+        ingestor: 'Operador Bitacora',
+        location: 'Foro 3',
       );
 
       await tester.pumpWidget(
@@ -88,9 +86,30 @@ void main() {
           home: Scaffold(
             body: ProformaDlXmlDialog(
               project: project,
+              mediaFiles: const [],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Operador Bitacora'), findsOneWidget);
+      expect(find.text('Foro 3'), findsOneWidget);
+    });
+
+    testWidgets('populates detected media files and dynamically derives card and unit sub-convention', (tester) async {
+      setupDesktop(tester);
+
+      final project = buildNeutralProject();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ProformaDlXmlDialog(
+              project: project,
               mediaFiles: const [
-                '/media/INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.mxf',
-                '/media/INOCENCIA_01_15_PROT2_CAM1_D03_UCR14.mxf',
+                '/media/INFAM_32_2_T1_PORT16_13_D40_U11B.mxf',
+                '/media/INFAM_32_2_T2_CAM1_14_D40_U11B.mxf',
               ],
             ),
           ),
@@ -99,36 +118,23 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('2 clips detectados'), findsOneWidget);
-      expect(find.text('INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.mxf'), findsOneWidget);
-      expect(find.text('INOCENCIA_01_15_PROT2_CAM1_D03_UCR14.mxf'), findsOneWidget);
-      expect(find.textContaining('INOCENCIA_01_15_PROT1_CAM1_D03_UCR14%1_1_D03_U14B'), findsOneWidget);
+      expect(find.text('INFAM_32_2_T1_PORT16_13_D40_U11B.mxf'), findsOneWidget);
+      expect(find.text('INFAM_32_2_T2_CAM1_14_D40_U11B.mxf'), findsOneWidget);
+      expect(
+        find.textContaining('INFAM_32_2_T1_PORT16_13_D40_U11B%16_1_D40_U11B'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('INFAM_32_2_T2_CAM1_14_D40_U11B%1_2_D40_U11B'),
+        findsOneWidget,
+      );
       expect(find.text('Ver XML'), findsNWidgets(2));
     });
 
-    testWidgets('applying batch defaults updates all clips and toggling take selection changes state', (tester) async {
+    testWidgets('applying batch defaults preserves dynamic card/unit when blank and toggles take selection', (tester) async {
       setupDesktop(tester);
 
-      final project = RenombrataProject(
-        defaultReel: '001',
-        activeCamera: 'A',
-        log: ShootingLog(
-          metadata: ShootingLogMetadata(
-            nomenclature: 'INOCENCIA',
-            date: '2026-11-12',
-            unit: 'UCR14',
-            day: 'D03',
-            producer: 'Televisa',
-            production: 'INOCENCIA',
-            location: 'TERMINAL DE AUTOBUSES DEL SUR',
-            audioFormat: '48kHz',
-            frameRate: '23.98',
-            videoCodec: 'XAVC',
-            responsibleEngineer: 'Ing. Test',
-            ingestor: 'ANGEL ESTRADA DIAZ',
-          ),
-          records: [],
-        ),
-      );
+      final project = buildNeutralProject();
 
       await tester.pumpWidget(
         MaterialApp(
@@ -136,8 +142,8 @@ void main() {
             body: ProformaDlXmlDialog(
               project: project,
               mediaFiles: const [
-                '/media/INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.mxf',
-                '/media/INOCENCIA_01_15_PROT2_CAM1_D03_UCR14.mxf',
+                '/media/INFAM_32_2_T1_PORT16_13_D40_U11B.mxf',
+                '/media/INFAM_32_2_T2_CAM1_14_D40_U11B.mxf',
               ],
             ),
           ),
@@ -145,13 +151,17 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Tap 'Aplicar a todos los clips'
+      // Tap 'Aplicar a todos los clips' with Card/Reel and Sub-Reel left blank
       final applyBtn = find.text('Aplicar a todos los clips');
       expect(applyBtn, findsOneWidget);
       await tester.tap(applyBtn);
       await tester.pumpAndSettle();
 
       expect(find.textContaining('Se aplicaron los valores por lote a los 2 clips.'), findsOneWidget);
+      expect(
+        find.textContaining('INFAM_32_2_T1_PORT16_13_D40_U11B%16_1_D40_U11B'),
+        findsOneWidget,
+      );
 
       // Verify checkboxes for Toma Seleccionada exist
       final checkboxes = find.byType(Checkbox);
@@ -166,31 +176,10 @@ void main() {
       expect(find.text('SÍ'), findsOneWidget);
     });
 
-    testWidgets('HomeScreen renders Generar Metadatos XML button and opens ProformaDlXmlDialog', (tester) async {
+    testWidgets('HomeScreen button in Renombrador tab switches to Generador de Metadata tab', (tester) async {
       setupDesktop(tester);
 
-      final project = RenombrataProject(
-        defaultReel: '001',
-        activeCamera: 'A',
-        log: ShootingLog(
-          metadata: ShootingLogMetadata(
-            nomenclature: 'INOCENCIA',
-            date: '2026-11-12',
-            unit: 'UCR14',
-            day: 'D03',
-            producer: 'Televisa',
-            production: 'INOCENCIA',
-            location: 'TERMINAL DE AUTOBUSES DEL SUR',
-            audioFormat: '48kHz',
-            frameRate: '23.98',
-            videoCodec: 'XAVC',
-            responsibleEngineer: 'Ing. Test',
-            ingestor: 'ANGEL ESTRADA DIAZ',
-          ),
-          records: [],
-        ),
-      );
-
+      final project = buildNeutralProject();
       final report = DryRunReport(proposals: []);
 
       await tester.pumpWidget(
@@ -204,8 +193,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Switch to the 'Renombrador de Medios' tab where the controls bar is located
-      await tester.tap(find.text('Renombrador de Medios'));
+      // Switch to the 'Renombrador' tab where the controls bar is located
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final dlBtn = find.byKey(const ValueKey('open_proforma_dl_dialog_button'));
@@ -215,6 +204,8 @@ void main() {
       await tester.tap(dlBtn);
       await tester.pumpAndSettle();
 
+      // Should now be on the Generador de Metadata tab (Tab 3)
+      expect(find.byType(MetadataGeneratorTab), findsOneWidget);
       expect(find.text('Generador de Metadatos XML (DigitalLogic 3.2 / Proforma DL)'), findsOneWidget);
     });
   });

@@ -101,7 +101,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renamer tab then Studio mode
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       final studioBtn = find.widgetWithText(OutlinedButton, 'Modo Estudio');

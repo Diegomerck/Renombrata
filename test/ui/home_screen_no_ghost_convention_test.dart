@@ -38,7 +38,7 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.tap(find.text('Renombrador'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(OutlinedButton, 'Modo Estudio'));
     await tester.pumpAndSettle();

@@ -160,7 +160,7 @@ void main() {
         await tester.pumpAndSettle();
 
         // Switch to Renombrador tab
-        await tester.tap(find.text('Renombrador de Medios'));
+        await tester.tap(find.text('Renombrador'));
         await tester.pumpAndSettle();
 
         // Ensure in Studio mode
@@ -220,7 +220,7 @@ void main() {
         await tester.pumpAndSettle();
 
         // Switch to Renombrador tab
-        await tester.tap(find.text('Renombrador de Medios'));
+        await tester.tap(find.text('Renombrador'));
         await tester.pumpAndSettle();
 
         final captureButtonFinder = find.byKey(

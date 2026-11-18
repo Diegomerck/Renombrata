@@ -94,10 +94,10 @@ void main() {
 
     // Verify both tabs render and switch properly
     expect(find.text('Bitácora Digital'), findsOneWidget);
-    expect(find.text('Renombrador de Medios'), findsOneWidget);
+    expect(find.text('Renombrador'), findsOneWidget);
 
     // Switch to Renombrador de Medios tab
-    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.tap(find.text('Renombrador'));
     await tester.pumpAndSettle();
 
     // Verify controls and layout render without exceptions
@@ -197,10 +197,10 @@ void main() {
 
     // Verify tabs
     expect(find.text('Bitácora Digital'), findsOneWidget);
-    expect(find.text('Renombrador de Medios'), findsOneWidget);
+    expect(find.text('Renombrador'), findsOneWidget);
 
     // Switch to Renombrador de Medios tab
-    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.tap(find.text('Renombrador'));
     await tester.pumpAndSettle();
 
     // Verify table scrollbar and DataTable are present
@@ -232,7 +232,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.tap(find.text('Renombrador'));
     await tester.pumpAndSettle();
 
     // In narrow mode (< 1050), footer uses Wrap
@@ -300,7 +300,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Renombrador de Medios'));
+    await tester.tap(find.text('Renombrador'));
     await tester.pumpAndSettle();
 
     // Verify green TC Coincide badge is present for r1

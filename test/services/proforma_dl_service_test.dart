@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:renombrata/src/models/proforma_dl_metadata.dart';
 import 'package:renombrata/src/services/digitallogic_xml_service.dart';
 import 'package:renombrata/src/services/proforma_dl_service.dart';
 
@@ -209,7 +208,45 @@ void main() {
       expect(ProformaDlService.deriveSubReelId('UCR14'), equals('U14B'));
       expect(ProformaDlService.deriveSubReelId('U14'), equals('U14B'));
       expect(ProformaDlService.deriveSubReelId('U14B'), equals('U14B'));
+      expect(ProformaDlService.deriveSubReelId('U11B'), equals('U11B'));
       expect(ProformaDlService.deriveSubReelId('DS'), equals('DSB'));
+      expect(ProformaDlService.extractCardNumber('PORT16'), equals('16'));
+    });
+
+    test('parses INFAM_32_2_T1_PORT16_13_D40_U11B and derives dynamic sub-convention 16_1_D40_U11B', () {
+      final parsed = ProformaDlService.parseConventionFilename(
+        'INFAM_32_2_T1_PORT16_13_D40_U11B.mxf',
+      );
+
+      expect(parsed.production, equals('INFAM'));
+      expect(parsed.chapter, equals('32'));
+      expect(parsed.scene, equals('2'));
+      expect(parsed.take, equals('T1'));
+      expect(parsed.camera, equals('PORT16'));
+      expect(parsed.day, equals('D40'));
+      expect(parsed.unitCard, equals('U11B'));
+      expect(parsed.clipName, equals('INFAM_32_2_T1_PORT16_13_D40_U11B'));
+
+      final meta = ProformaDlService.createMetadata(
+        filePath: '/media/INFAM_32_2_T1_PORT16_13_D40_U11B.mxf',
+      );
+      expect(meta.clipName, equals('INFAM_32_2_T1_PORT16_13_D40_U11B'));
+      expect(meta.subConvention, equals('16_1_D40_U11B'));
+      expect(
+        meta.convencionNombre,
+        equals('INFAM_32_2_T1_PORT16_13_D40_U11B%16_1_D40_U11B'),
+      );
+      expect(meta.lugar, isEmpty);
+      expect(meta.sinopsis, isEmpty);
+      expect(meta.operadorIngesta, isEmpty);
+      expect(meta.observacionesVideo, isEmpty);
+      expect(meta.observacionesAudio, isEmpty);
+      expect(meta.descripcionVfx, isEmpty);
+
+      final cam1Meta = ProformaDlService.createMetadata(
+        filePath: '/media/INFAM_32_2_T1_CAM1_13_D40_U11B.mxf',
+      );
+      expect(cam1Meta.subConvention, equals('1_1_D40_U11B'));
     });
   });
 
@@ -226,19 +263,13 @@ void main() {
       }
     });
 
-    test('writes XML sidecar file adjacent to media file and matches schema', () async {
-      final mediaFile = File(p.join(tempDir.path, 'INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.mxf'));
+    test('writes XML sidecar file with neutral empty tags when metadata is not supplied', () async {
+      final mediaFile = File(p.join(tempDir.path, 'INFAM_32_2_T1_PORT16_13_D40_U11B.mxf'));
       await mediaFile.writeAsString('dummy mxf binary');
 
       final meta = ProformaDlService.createMetadata(
         filePath: mediaFile.path,
-        clipSequenceNumber: 6,
-        defaultOperador: 'ANGEL ESTRADA DIAZ ',
-        defaultPais: 'MEXICO ',
-        defaultCiudad: 'CDMX ',
-        defaultLugar: 'TERMINAL DE AUTOBUSES DEL SUR',
-        defaultSinopsis: 'LLEGA INOCENCIA EN AUTOBUS ',
-        defaultAudioObs: ' MIX Y MULTITRACK',
+        clipSequenceNumber: 1,
       );
 
       final results = await ProformaDlService.batchGenerateSidecars(
@@ -246,7 +277,7 @@ void main() {
         overwrite: true,
       );
 
-      final expectedXmlPath = p.join(tempDir.path, 'INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.xml');
+      final expectedXmlPath = p.join(tempDir.path, 'INFAM_32_2_T1_PORT16_13_D40_U11B.xml');
       expect(results.containsKey(mediaFile.path), isTrue);
       final generatedFile = results[mediaFile.path]!;
       expect(generatedFile.path, equals(expectedXmlPath));
@@ -255,22 +286,49 @@ void main() {
       final content = await generatedFile.readAsString();
       expect(content, contains('<!DOCTYPE Proforma_DL>'));
       expect(content, contains('<digitallogic version="3.2">'));
-      expect(content, contains('<produccionNombre>INOCENCIA</produccionNombre>'));
-      expect(content, contains('<convencionNombre>INOCENCIA_01_15_PROT1_CAM1_D03_UCR14%1_6_D03_U14B</convencionNombre>'));
-      expect(content, contains('<clipName>INOCENCIA_01_15_PROT1_CAM1_D03_UCR14</clipName>'));
-      expect(content, contains('<fuente>Portátil</fuente>'));
-      expect(content, contains('<ubicacion>Exterior</ubicacion>'));
-      expect(content, contains('<temporalidad>Día</temporalidad>'));
-      expect(content, contains('<tomaSeleccionada>SÍ</tomaSeleccionada>'));
-      expect(content, contains('<pais>MEXICO </pais>'));
-      expect(content, contains('<ciudad>CDMX </ciudad>'));
-      expect(content, contains('<lugar>TERMINAL DE AUTOBUSES DEL SUR</lugar>'));
-      expect(content, contains('<vfxCompuestos>No</vfxCompuestos>'));
+      expect(content, contains('<produccionNombre>INFAM</produccionNombre>'));
+      expect(
+        content,
+        contains('<convencionNombre>INFAM_32_2_T1_PORT16_13_D40_U11B%16_1_D40_U11B</convencionNombre>'),
+      );
+      expect(content, contains('<clipName>INFAM_32_2_T1_PORT16_13_D40_U11B</clipName>'));
+      expect(content, contains('<lugar></lugar>'));
       expect(content, contains('<descripcionVfx/>'));
-      expect(content, contains('<observacionesVideo>OK SLOG 3</observacionesVideo>'));
-      expect(content, contains('<observacionesAudio> MIX Y MULTITRACK</observacionesAudio>'));
-      expect(content, contains('<sinopsis>LLEGA INOCENCIA EN AUTOBUS </sinopsis>'));
-      expect(content, contains('<operadorIngesta>ANGEL ESTRADA DIAZ </operadorIngesta>'));
+      expect(content, contains('<observacionesVideo></observacionesVideo>'));
+      expect(content, contains('<observacionesAudio></observacionesAudio>'));
+      expect(content, contains('<sinopsis></sinopsis>'));
+      expect(content, contains('<operadorIngesta></operadorIngesta>'));
+    });
+
+    test('writes XML sidecar file with supplied batch metadata values', () async {
+      final mediaFile = File(p.join(tempDir.path, 'INOCENCIA_01_15_PROT1_CAM1_D03_UCR14.mxf'));
+      await mediaFile.writeAsString('dummy mxf binary');
+
+      final meta = ProformaDlService.createMetadata(
+        filePath: mediaFile.path,
+        clipSequenceNumber: 6,
+        defaultOperador: 'Operador Prueba',
+        defaultPais: 'MEXICO',
+        defaultCiudad: 'CDMX',
+        defaultLugar: 'Locacion Central',
+        defaultSinopsis: 'Entrada principal',
+        defaultVideoObs: 'LOG C',
+        defaultAudioObs: 'MIX',
+      );
+
+      final results = await ProformaDlService.batchGenerateSidecars(
+        items: [meta],
+        overwrite: true,
+      );
+
+      final generatedFile = results[mediaFile.path]!;
+      final content = await generatedFile.readAsString();
+      expect(content, contains('<convencionNombre>INOCENCIA_01_15_PROT1_CAM1_D03_UCR14%1_6_D03_U14B</convencionNombre>'));
+      expect(content, contains('<lugar>Locacion Central</lugar>'));
+      expect(content, contains('<observacionesVideo>LOG C</observacionesVideo>'));
+      expect(content, contains('<observacionesAudio>MIX</observacionesAudio>'));
+      expect(content, contains('<sinopsis>Entrada principal</sinopsis>'));
+      expect(content, contains('<operadorIngesta>Operador Prueba</operadorIngesta>'));
     });
   });
 }

@@ -56,7 +56,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Navigate to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Enter Modo Estudio
@@ -98,7 +98,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Navigate to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Verify Table View shows both (including missing file with Falta status)
@@ -130,7 +130,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Navigate to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Open camera selector dropdown

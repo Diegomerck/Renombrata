@@ -114,7 +114,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Open MediaPreviewDialog via Inspeccionar Lote
@@ -201,7 +201,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Switch to Renombrador de Medios tab
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Open MediaPreviewDialog via Inspeccionar Lote

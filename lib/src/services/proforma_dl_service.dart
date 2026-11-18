@@ -110,24 +110,41 @@ class ProformaDlService {
     String day = '';
     String camera = '';
 
-    // Unit / Card regex (e.g. UCR14, U1, U3, DS, U14B)
+    // Unit / Card regex (e.g. UCR14, U1, U3, DS, U14B, U11B)
     if (tokens.isNotEmpty &&
         (RegExp(r'^U(CR)?\w*$', caseSensitive: false).hasMatch(tokens.last) ||
             tokens.last.toUpperCase() == 'DS')) {
       unitCard = tokens.removeLast();
     }
 
-    // Day regex (e.g. D03, D1, D24)
+    // Day regex (e.g. D03, D1, D24, D40)
     if (tokens.isNotEmpty &&
         RegExp(r'^D\d+$', caseSensitive: false).hasMatch(tokens.last)) {
       day = tokens.removeLast();
     }
 
-    // Camera regex (e.g. CAM1, CAM A, CAMA, A001, GPR1, DR1, NFF)
-    if (tokens.isNotEmpty &&
-        (RegExp(r'^(CAM\s*[\dA-Za-z]+|[A-Z]\d{2,4}|GPR\d*|DR\d*|NFF)$',
-                caseSensitive: false)
-            .hasMatch(tokens.last))) {
+    // Camera regex (e.g. CAM1, CAM A, CAMA, PORT16, A001, GPR1, DR1, NFF)
+    final cameraRegex = RegExp(
+      r'^(CAM\s*[\dA-Za-z]+|PORT\s*[\dA-Za-z]+|[A-Z]\d{2,4}|GPR\d*|DR\d*|NFF)$',
+      caseSensitive: false,
+    );
+
+    // Optional trailing numeric clip index (e.g. 13 in INFAM_32_2_T1_PORT16_13_D40_U11B
+    // or after day in ..._CAM1_D40_13_U11B).
+    if (day.isEmpty &&
+        tokens.length >= 2 &&
+        RegExp(r'^\d+$').hasMatch(tokens.last) &&
+        RegExp(r'^D\d+$', caseSensitive: false)
+            .hasMatch(tokens[tokens.length - 2])) {
+      tokens.removeLast();
+      day = tokens.removeLast();
+    } else if (tokens.length >= 2 &&
+        RegExp(r'^\d+$').hasMatch(tokens.last) &&
+        cameraRegex.hasMatch(tokens[tokens.length - 2])) {
+      tokens.removeLast();
+    }
+
+    if (tokens.isNotEmpty && cameraRegex.hasMatch(tokens.last)) {
       camera = tokens.removeLast();
     }
 
@@ -284,12 +301,19 @@ class ProformaDlService {
     );
 
     // Cross-reference with project bitácora if available
-    String matchedLugar = defaultLugar ?? project?.log.metadata.location ?? '';
-    String matchedSinopsis = defaultSinopsis ?? '';
-    String matchedIngestor = defaultOperador ??
-        (project?.log.metadata.ingestor.isNotEmpty == true
-            ? project!.log.metadata.ingestor
-            : '');
+    String matchedLugar = (defaultLugar != null && defaultLugar.trim().isNotEmpty)
+        ? defaultLugar
+        : (project?.log.metadata.location ?? '');
+    String matchedSinopsis =
+        (defaultSinopsis != null && defaultSinopsis.trim().isNotEmpty)
+            ? defaultSinopsis
+            : '';
+    String matchedIngestor =
+        (defaultOperador != null && defaultOperador.trim().isNotEmpty)
+            ? defaultOperador
+            : (project?.log.metadata.ingestor.isNotEmpty == true
+                ? project!.log.metadata.ingestor
+                : '');
     bool isSelected = true;
 
     if (project != null && project.log.records.isNotEmpty) {
@@ -306,7 +330,9 @@ class ProformaDlService {
       );
 
       if (match != null) {
-        if (match.observations != null && match.observations.toString().trim().isNotEmpty) {
+        if (matchedSinopsis.isEmpty &&
+            match.observations != null &&
+            match.observations.toString().trim().isNotEmpty) {
           matchedSinopsis = match.observations.toString().trim();
         }
         if (match.isTf == true) {
@@ -333,8 +359,8 @@ class ProformaDlService {
       lugar: matchedLugar,
       vfxCompuestos: defaultVfxCompuestos ?? 'No',
       descripcionVfx: defaultDescripcionVfx ?? '',
-      observacionesVideo: defaultVideoObs ?? 'OK SLOG 3',
-      observacionesAudio: defaultAudioObs ?? 'MIX Y MULTITRACK',
+      observacionesVideo: defaultVideoObs ?? '',
+      observacionesAudio: defaultAudioObs ?? '',
       sinopsis: matchedSinopsis,
       operadorIngesta: matchedIngestor,
       chapter: parsed.chapter,
@@ -347,6 +373,62 @@ class ProformaDlService {
       clipSequenceNumber: clipSequenceNumber,
       unitSubId: unitSub,
     );
+  }
+
+  /// Applies batch default metadata values and optional card/unit overrides to [items].
+  ///
+  /// When [cardNumberOverride] or [unitSubIdOverride] is blank, each item retains
+  /// its own dynamically extracted [ProformaDlMetadata.cardNumber] / [ProformaDlMetadata.unitSubId].
+  static void applyBatchDefaults({
+    required List<ProformaDlMetadata> items,
+    required String operador,
+    required String pais,
+    required String ciudad,
+    required String ubicacion,
+    required String temporalidad,
+    required String fuente,
+    required String videoObs,
+    required String audioObs,
+    required String lugar,
+    required String sinopsis,
+    required String vfxCompuestos,
+    required String descripcionVfx,
+    String cardNumberOverride = '',
+    String unitSubIdOverride = '',
+  }) {
+    final trimmedCard = cardNumberOverride.trim();
+    final trimmedUnit = unitSubIdOverride.trim();
+
+    for (int i = 0; i < items.length; i++) {
+      final item = items[i];
+      item.operadorIngesta = operador;
+      item.pais = pais;
+      item.ciudad = ciudad;
+      item.ubicacion = ubicacion;
+      item.temporalidad = temporalidad;
+      item.fuente = fuente;
+      item.observacionesVideo = videoObs;
+      item.observacionesAudio = audioObs;
+      item.lugar = lugar;
+      item.sinopsis = sinopsis;
+      item.vfxCompuestos = vfxCompuestos;
+      item.descripcionVfx = descripcionVfx;
+
+      final cardNum = trimmedCard.isNotEmpty ? trimmedCard : item.cardNumber;
+      final unitSub = trimmedUnit.isNotEmpty ? trimmedUnit : item.unitSubId;
+
+      final sub = buildSubConvention(
+        cardNumber: cardNum,
+        clipSequenceNumber: i + 1,
+        day: item.day,
+        unitSubId: unitSub,
+      );
+      item.subConvention = sub;
+      item.convencionNombre = buildFullConvention(
+        clipName: item.clipName,
+        subConvention: sub,
+      );
+    }
   }
 
   /// Generates the XML string for a [ProformaDlMetadata] entry.

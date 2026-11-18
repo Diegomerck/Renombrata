@@ -105,8 +105,8 @@ class DigitalLogicXmlService {
     String lugar = '',
     String vfxCompuestos = 'No',
     String descripcionVfx = '',
-    String observacionesVideo = 'OK SLOG 3',
-    String observacionesAudio = 'MIX Y MULTITRACK',
+    String observacionesVideo = '',
+    String observacionesAudio = '',
     String sinopsis = '',
     String operadorIngesta = '',
   }) {

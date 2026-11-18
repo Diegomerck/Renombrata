@@ -182,7 +182,7 @@ void main() {
       final dynamic homeState = tester.state(find.byType(HomeScreen));
 
       // Switch to Renombrador de Medios tab (index 1)
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Set playback position to 35 seconds
@@ -203,7 +203,7 @@ void main() {
       expect(homeState.studioPlayer, isNotNull);
 
       // Switch back to Renombrador de Medios (index 1)
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Verify the player is still intact and position preserved
@@ -233,7 +233,7 @@ void main() {
       final dynamic homeState = tester.state(find.byType(HomeScreen));
 
       // Switch to Renombrador de Medios tab (index 1)
-      await tester.tap(find.text('Renombrador de Medios'));
+      await tester.tap(find.text('Renombrador'));
       await tester.pumpAndSettle();
 
       // Reset pause call flags
